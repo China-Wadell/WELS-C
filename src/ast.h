@@ -5,10 +5,17 @@
 #define MAX_STRUCT_FIELDS    32
 #define MAX_STRUCT_INSTANCES 32
 
+typedef struct {
+    const char *base; int base_len;
+    int is_ptr, is_ref, is_array, is_range;
+    int is_const, is_static, is_local, is_container;
+} type_desc_t;
+
 typedef enum {
     EX_INT, EX_FLOAT, EX_STRING, EX_IDENT,
     EX_BINARY, EX_UNARY, EX_CALL, EX_ASSIGN,
     EX_CONST_DECL, EX_ARRAY_INIT, EX_INDEX, EX_MEMBER, EX_ARROW,
+    EX_TYPED, EX_CONVERT,
 } expr_kind_t;
 
 typedef struct expr {
@@ -19,16 +26,12 @@ typedef struct expr {
     const char *op_text; int op_len;
     struct expr *left, *right, *operand;
     struct expr **args; int nargs;
+    type_desc_t typed_type;
 } expr_t;
 
-typedef struct {
-    const char *base; int base_len;
-    int is_ptr, is_ref, is_array, is_range;
-    int is_const, is_static, is_local, is_container;
-} type_desc_t;
-
 typedef enum {
-    ST_LET, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK, ST_BREAK, ST_CONTINUE, ST_MATCH,
+    ST_LET, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK,
+    ST_BREAK, ST_CONTINUE, ST_MATCH, ST_LABEL, ST_GOTO,
 } stmt_kind_t;
 
 typedef struct stmt {
@@ -40,7 +43,6 @@ typedef struct stmt {
     struct stmt *then_s, *else_s, *body, *for_init;
     struct stmt **stmts; int nstmts;
 
-    /* MATCH */
     expr_t **case_values; int ncases;
     struct stmt *default_s;
 } stmt_t;

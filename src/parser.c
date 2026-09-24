@@ -221,6 +221,25 @@ static int parse_postfix(parser_t *P, expr_t **out) {
             *out = mem;
             continue;
         }
+        if (is_kw(P, KW_CONVERT)) {
+            p_advance(P);
+            if (P->cur.kind != TOK_KEYWORD) return p_err(P, "期望目标类型");
+            expr_t *cv = new_expr(EX_CONVERT);
+            cv->line = (*out)->line; cv->col = (*out)->col;
+            cv->left = *out;
+            cv->typed_type.base = P->cur.start;
+            cv->typed_type.base_len = P->cur.len;
+            p_advance(P);
+            /* 后缀修饰符 */
+            for (;;) {
+                if (is_kw(P, KW_PTR))   { cv->typed_type.is_ptr = 1; p_advance(P); continue; }
+                if (is_kw(P, KW_REF))   { cv->typed_type.is_ref = 1; p_advance(P); continue; }
+                if (is_kw(P, KW_ARRAY)) { cv->typed_type.is_array = 1; p_advance(P); continue; }
+                break;
+            }
+            *out = cv;
+            continue;
+        }
         if (is_op(P, "->")) {
             p_advance(P);
             if (P->cur.kind != TOK_IDENT) return p_err(P, "期望字段名");
@@ -240,6 +259,22 @@ static int parse_postfix(parser_t *P, expr_t **out) {
 
 static int parse_unary(parser_t *P, expr_t **out) {
     p_peek(P);
+    /* 类型前缀：双精 3.14 */
+    if (P->cur.kind == TOK_KEYWORD &&
+        (P->cur.kw_id == KW_INT || P->cur.kw_id == KW_LONG ||
+         P->cur.kw_id == KW_SHORT || P->cur.kw_id == KW_BYTE ||
+         P->cur.kw_id == KW_UNSIGNED || P->cur.kw_id == KW_FLOAT ||
+         P->cur.kw_id == KW_DOUBLE || P->cur.kw_id == KW_CHAR ||
+         P->cur.kw_id == KW_BOOL || P->cur.kw_id == KW_STRING)) {
+        expr_t *e = new_expr(EX_TYPED);
+        e->line = P->cur.line; e->col = P->cur.col;
+        e->typed_type.base = P->cur.start;
+        e->typed_type.base_len = P->cur.len;
+        p_advance(P);
+        if (parse_unary(P, &e->operand) < 0) return -1;
+        *out = e;
+        return 0;
+    }
     if (is_op(P, "-") || is_op(P, "!") || is_op(P, "~") ||
         is_op(P, "*") || is_op(P, "&") ||
         is_op(P, "++") || is_op(P, "--")) {
@@ -752,6 +787,28 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
     if (is_kw(P, KW_FOR))                          return parse_for(P, out);
     if (is_kw(P, KW_MODIFY))                       return parse_modify(P, out);
     if (is_kw(P, KW_MATCH))                        return parse_match(P, out);
+    if (is_kw(P, KW_LABEL)) {
+        p_advance(P);
+        if (P->cur.kind != TOK_IDENT) return p_err(P, "期望标签名");
+        stmt_t *s = new_stmt(ST_LABEL);
+        s->name = P->cur.start;
+        s->name_len = P->cur.len;
+        p_advance(P);
+        if (expect_op(P, ":", "期望 ':'") < 0) return -1;
+        *out = s;
+        return 0;
+    }
+    if (is_kw(P, KW_GOTO)) {
+        p_advance(P);
+        if (P->cur.kind != TOK_IDENT) return p_err(P, "期望标签名");
+        stmt_t *s = new_stmt(ST_GOTO);
+        s->name = P->cur.start;
+        s->name_len = P->cur.len;
+        p_advance(P);
+        if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+        *out = s;
+        return 0;
+    }
     if (is_kw(P, KW_BREAK)) {
         p_advance(P);
         if (expect_punct(P, ';', "期望 ';'") < 0) return -1;

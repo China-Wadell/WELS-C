@@ -270,6 +270,26 @@ static void gen_expr(expr_t *e) {
             emit("    mov %d(%%rax), %%rax\n", sd->fields[fi].offset);
             break;
         }
+        case EX_TYPED:
+            gen_expr(e->operand);
+            break;
+        case EX_CONVERT: {
+            gen_expr(e->left);
+            int src_f = 0;
+            /* 源类型：从 EX_TYPED 或已推 */
+            if (e->left->kind == EX_TYPED)
+                src_f = is_float_type(&e->left->typed_type);
+            else
+                src_f = expr_is_float(e->left);
+            int dst_f = is_float_type(&e->typed_type);
+            if (src_f && !dst_f) {
+                emit("    cvttsd2si %%xmm0, %%rax\n");
+            } else if (!src_f && dst_f) {
+                emit("    pxor %%xmm0, %%xmm0\n");
+                emit("    cvtsi2sd %%rax, %%xmm0\n");
+            }
+            break;
+        }
         case EX_ARROW: {
             /* p->x：p 是指针，字段名全局搜索 */
             gen_expr(e->left);
@@ -525,6 +545,12 @@ static void gen_stmt(stmt_t *s) {
             free(L_case);
             break;
         }
+        case ST_LABEL:
+            emit(".Luser_%.*s:\n", s->name_len, s->name);
+            break;
+        case ST_GOTO:
+            emit("    jmp .Luser_%.*s\n", s->name_len, s->name);
+            break;
         case ST_BREAK:
             if (g_loop_depth > 0)
                 emit("    jmp .L%d\n", g_break_stack[g_loop_depth - 1]);

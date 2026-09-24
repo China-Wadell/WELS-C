@@ -44,6 +44,12 @@ typedef enum {
     /* 函数 */
     KW_FN,
 
+    /* 类型转换 */
+    KW_CONVERT,  /* 转化为 / convert */
+
+    /* 标签 */
+    KW_LABEL,    /* 标 / label */
+
     /* 作用域 */
     KW_GLOBAL, KW_LOCAL, KW_STATIC,
 

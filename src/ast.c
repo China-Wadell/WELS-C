@@ -89,6 +89,14 @@ static void print_expr(expr_t *e, int d) {
             printf("ARROW(%.*s)\n", e->name_len, e->name);
             print_expr(e->left, d + 1);
             break;
+        case EX_TYPED:
+            printf("TYPED(%.*s)\n", e->typed_type.base_len, e->typed_type.base);
+            print_expr(e->operand, d + 1);
+            break;
+        case EX_CONVERT:
+            printf("CONVERT_TO(%.*s)\n", e->typed_type.base_len, e->typed_type.base);
+            print_expr(e->left, d + 1);
+            break;
     }
 }
 
@@ -158,6 +166,12 @@ static void print_stmt(stmt_t *s, int d) {
             break;
         case ST_CONTINUE:
             indent(d); puts("CONTINUE");
+            break;
+        case ST_LABEL:
+            indent(d); printf("LABEL(%.*s)\n", s->name_len, s->name);
+            break;
+        case ST_GOTO:
+            indent(d); printf("GOTO(%.*s)\n", s->name_len, s->name);
             break;
         case ST_MATCH:
             indent(d); puts("MATCH");
