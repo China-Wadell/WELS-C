@@ -89,10 +89,11 @@ static int skip_spaces(const char *src, int len, int i) {
 
 /* 条件编译栈 */
 #define MAX_COND 32
-static int  g_cond_stack[MAX_COND];   /* 1 = 输出, 0 = 跳过 */
-static int  g_cond_else[MAX_COND];    /* 是否已经遇到过 #否则 */
+static int  g_cond_stack[MAX_COND];
+static int  g_cond_else[MAX_COND];
+static int  g_cond_matched[MAX_COND];
 static int  g_cond_depth = 0;
-static int  g_skipping = 0;           /* 当前是否跳过 */
+static int  g_skipping = 0;
 
 static char *pp_process(const char *src, int len, const char *base_dir, int depth) {
     if (depth > 16) { fprintf(stderr, "错误: 头文件嵌套过深\n"); exit(1); }
@@ -170,7 +171,7 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
             /* 条件编译：即使 skipping 也要处理 */
             if (starts_with(src + i, len - i, "#若定义") ||
                 starts_with(src + i, len - i, "#ifdef")) {
-                int k = starts_with(src + i, len - i, "#ifdef") ? i + 6 : i + 9;
+                int k = starts_with(src + i, len - i, "#ifdef") ? i + 6 : i + 10;
                 k = skip_spaces(src, len, k);
                 int ns = k;
                 while (k < len && is_ident_ch(src[k])) k++;
@@ -180,6 +181,7 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
                 int parent_ok = !g_skipping;
                 g_cond_stack[g_cond_depth] = (parent_ok && cond) ? 1 : 0;
                 g_cond_else[g_cond_depth] = 0;
+                g_cond_matched[g_cond_depth] = (parent_ok && cond) ? 1 : 0;
                 g_cond_depth++;
                 g_skipping = !(g_cond_stack[g_cond_depth-1]);
                 i = skip_to_eol(src, len, k);
@@ -188,7 +190,7 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
             }
             if (starts_with(src + i, len - i, "#若未定") ||
                 starts_with(src + i, len - i, "#ifndef")) {
-                int k = starts_with(src + i, len - i, "#ifndef") ? i + 7 : i + 9;
+                int k = starts_with(src + i, len - i, "#ifndef") ? i + 7 : i + 10;
                 k = skip_spaces(src, len, k);
                 int ns = k;
                 while (k < len && is_ident_ch(src[k])) k++;
@@ -198,38 +200,59 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
                 int parent_ok = !g_skipping;
                 g_cond_stack[g_cond_depth] = (parent_ok && cond) ? 1 : 0;
                 g_cond_else[g_cond_depth] = 0;
+                g_cond_matched[g_cond_depth] = (parent_ok && cond) ? 1 : 0;
                 g_cond_depth++;
                 g_skipping = !(g_cond_stack[g_cond_depth-1]);
                 i = skip_to_eol(src, len, k);
                 at_line_start = 1;
                 continue;
             }
+            if (starts_with(src + i, len - i, "#否则若") ||
+                starts_with(src + i, len - i, "#elif")) {
+                if (g_cond_depth == 0) { i = skip_to_eol(src, len, i); at_line_start = 1; continue; }
+                int k = starts_with(src + i, len - i, "#elif") ? i + 5 : i + 10;
+                k = skip_spaces(src, len, k);
+                int ns = k;
+                while (k < len && is_ident_ch(src[k])) k++;
+                int nl = k - ns;
+                int cond = (nl > 0) ? macro_defined(src + ns, nl) : 0;
+                int top = g_cond_depth - 1;
+                int parent_ok = (top == 0) ? 1 : g_cond_stack[top - 1];
+                if (!parent_ok || g_cond_matched[top]) {
+                    g_cond_stack[top] = 0;
+                } else if (cond) {
+                    g_cond_stack[top] = 1;
+                    g_cond_matched[top] = 1;
+                } else {
+                    g_cond_stack[top] = 0;
+                }
+                g_skipping = 0;
+                for (int d = 0; d < g_cond_depth; d++)
+                    if (!g_cond_stack[d]) { g_skipping = 1; break; }
+                i = skip_to_eol(src, len, k); at_line_start = 1; continue;
+            }
             if (starts_with(src + i, len - i, "#否则") ||
                 starts_with(src + i, len - i, "#else")) {
                 if (g_cond_depth == 0) { i = skip_to_eol(src, len, i); at_line_start = 1; continue; }
                 int k = starts_with(src + i, len - i, "#else") ? i + 5 : i + 7;
                 int top = g_cond_depth - 1;
-                if (g_cond_else[top]) {
-                    /* 双重 else，忽略 */
-                    i = skip_to_eol(src, len, k);
-                    at_line_start = 1;
-                    continue;
-                }
+                if (g_cond_else[top]) { i = skip_to_eol(src, len, k); at_line_start = 1; continue; }
                 g_cond_else[top] = 1;
                 int parent_ok = (top == 0) ? 1 : g_cond_stack[top - 1];
-                int new_state = (parent_ok && !g_cond_stack[top]) ? 1 : 0;
-                g_cond_stack[top] = new_state;
-                /* 重算 skipping */
+                if (!parent_ok || g_cond_matched[top]) {
+                    g_cond_stack[top] = 0;
+                } else {
+                    g_cond_stack[top] = 1;
+                    g_cond_matched[top] = 1;
+                }
                 g_skipping = 0;
                 for (int d = 0; d < g_cond_depth; d++)
                     if (!g_cond_stack[d]) { g_skipping = 1; break; }
-                i = skip_to_eol(src, len, k);
-                at_line_start = 1;
-                continue;
+                i = skip_to_eol(src, len, k); at_line_start = 1; continue;
             }
             if (starts_with(src + i, len - i, "#结束若") ||
                 starts_with(src + i, len - i, "#endif")) {
-                int k = starts_with(src + i, len - i, "#endif") ? i + 6 : i + 9;
+                int k = starts_with(src + i, len - i, "#endif") ? i + 6 : i + 10;
                 if (g_cond_depth > 0) g_cond_depth--;
                 g_skipping = 0;
                 for (int d = 0; d < g_cond_depth; d++)
