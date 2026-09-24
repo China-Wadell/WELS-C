@@ -746,6 +746,51 @@ static int parse_cont_clear(parser_t *P, stmt_t **out) {
     return 0;
 }
 
+static int parse_range_bound(parser_t *P, int64_t *val, int *is_inf) {
+    *is_inf = 0;
+    int neg = 0;
+    p_peek(P);
+    if (is_op(P, "-")) { neg = 1; p_advance(P); p_peek(P); }
+    if (P->cur.kind == TOK_NUM_INT) {
+        *val = neg ? -(int64_t)P->cur.ival : (int64_t)P->cur.ival;
+        p_advance(P);
+        return 0;
+    }
+    if (P->cur.kind == TOK_IDENT && P->cur.len == 3 &&
+        (unsigned char)P->cur.start[0] == 0xE2 &&
+        (unsigned char)P->cur.start[1] == 0x88 &&
+        (unsigned char)P->cur.start[2] == 0x9E) {
+        *is_inf = 1;
+        *val = neg ? INT64_MIN : INT64_MAX;
+        p_advance(P);
+        return 0;
+    }
+    return p_err(P, "期望边界数字或 ∞");
+}
+
+static int parse_range_bounds(parser_t *P, type_desc_t *ty) {
+    int lo_open, hi_open;
+    if      (is_punct(P, '(')) { lo_open = 1; p_advance(P); }
+    else if (is_punct(P, '[')) { lo_open = 0; p_advance(P); }
+    else return p_err(P, "期望 '(' 或 '['");
+
+    int lo_inf, hi_inf;
+    int64_t lo, hi;
+    if (parse_range_bound(P, &lo, &lo_inf) < 0) return -1;
+    if (expect_punct(P, ',', "期望 ','") < 0) return -1;
+    if (parse_range_bound(P, &hi, &hi_inf) < 0) return -1;
+
+    if      (is_punct(P, ')')) { hi_open = 1; p_advance(P); }
+    else if (is_punct(P, ']')) { hi_open = 0; p_advance(P); }
+    else return p_err(P, "期望 ')' 或 ']'");
+
+    ty->range_lo = lo;
+    ty->range_hi = hi;
+    ty->range_lo_open = lo_open;
+    ty->range_hi_open = hi_open;
+    return 0;
+}
+
 static int parse_let(parser_t *P, stmt_t **out) {
     stmt_t *s = new_stmt(ST_LET);
     s->line = P->cur.line; s->col = P->cur.col;
@@ -773,6 +818,14 @@ static int parse_let(parser_t *P, stmt_t **out) {
     if (was_const) {
         s->type.is_const  = 1;
         s->type.is_static = 1;
+    }
+
+    /* 区间边界 */
+    if (s->type.is_range) {
+        p_peek(P);
+        if (is_punct(P, '(') || is_punct(P, '[')) {
+            if (parse_range_bounds(P, &s->type) < 0) return -1;
+        }
     }
 
     /* 值（可选） */

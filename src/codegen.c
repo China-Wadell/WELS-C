@@ -18,7 +18,10 @@ typedef struct {
     const char *name; int len; int offset;
     int is_array; int arr_len; int is_float;
     int is_container;
-    int cont_type;   /* 0=无, 1=整数, 2=字符串, 3=浮点 */
+    int cont_type;
+    int is_range;
+    int64_t range_lo, range_hi;
+    int range_lo_open, range_hi_open;
 } local_t;
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
@@ -50,6 +53,7 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].is_float = is_float;
     g_locals[g_nlocals].is_container = 0;
     g_locals[g_nlocals].cont_type = 0;
+    g_locals[g_nlocals].is_range = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -63,6 +67,7 @@ static int local_add_cont(const char *name, int len) {
     g_locals[g_nlocals].is_float = 0;
     g_locals[g_nlocals].is_container = 1;
     g_locals[g_nlocals].cont_type = 0;
+    g_locals[g_nlocals].is_range = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -386,8 +391,26 @@ static void gen_expr(expr_t *e) {
                 if (li < 0 && gi < 0) { fprintf(stderr, "错误: 未声明的变量\n"); exit(1); }
                 gen_expr(e->right);
                 if (li >= 0) {
-                    if (g_locals[li].is_float) emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
-                    else                       emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
+                    if (g_locals[li].is_range) {
+                        int L_skip = new_label();
+                        emit("    movq %%rax, %%rcx\n");
+                        if (g_locals[li].range_lo != INT64_MIN || !g_locals[li].range_lo_open) {
+                            emit("    movq $%lld, %%rdx\n", (long long)g_locals[li].range_lo);
+                            emit("    cmp %%rdx, %%rcx\n");
+                            if (g_locals[li].range_lo_open) emit("    jle .L%d\n", L_skip);
+                            else                            emit("    jl  .L%d\n", L_skip);
+                        }
+                        if (g_locals[li].range_hi != INT64_MAX || !g_locals[li].range_hi_open) {
+                            emit("    movq $%lld, %%rdx\n", (long long)g_locals[li].range_hi);
+                            emit("    cmp %%rdx, %%rcx\n");
+                            if (g_locals[li].range_hi_open) emit("    jge .L%d\n", L_skip);
+                            else                            emit("    jg  .L%d\n", L_skip);
+                        }
+                        emit("    movq %%rcx, %d(%%rbp)\n", g_locals[li].offset);
+                        emit(".L%d:\n", L_skip);
+                    }
+                    else if (g_locals[li].is_float) emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
+                    else                            emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
                 } else {
                     if (g_globals[gi].is_float) emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
                     else                        emit("    movq %%rax, g%d(%%rip)\n", g_globals[gi].id);
@@ -484,6 +507,7 @@ static void gen_stmt(stmt_t *s) {
         case ST_LET: {
             if (s->type.is_static) break;
             int is_f = is_float_type(&s->type);
+            int is_rng = s->type.is_range;
             if (s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT) {
                 int n = s->init->nargs;
                 int base = local_add_ex(s->name, s->name_len, 1, n, 0);
@@ -500,6 +524,14 @@ static void gen_stmt(stmt_t *s) {
                 if (s->init) gen_expr(s->init);
                 else emit("    movq $0, %%rax\n");
                 int off = local_add(s->name, s->name_len);
+                if (is_rng) {
+                    int li = find_local(s->name, s->name_len);
+                    g_locals[li].is_range       = 1;
+                    g_locals[li].range_lo       = s->type.range_lo;
+                    g_locals[li].range_hi       = s->type.range_hi;
+                    g_locals[li].range_lo_open  = s->type.range_lo_open;
+                    g_locals[li].range_hi_open  = s->type.range_hi_open;
+                }
                 emit("    movq %%rax, %d(%%rbp)\n", off);
             }
             break;
