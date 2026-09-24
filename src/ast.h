@@ -28,7 +28,7 @@ typedef struct {
 } type_desc_t;
 
 typedef enum {
-    ST_LET, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK, ST_BREAK, ST_CONTINUE,
+    ST_LET, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK, ST_BREAK, ST_CONTINUE, ST_MATCH,
 } stmt_kind_t;
 
 typedef struct stmt {
@@ -39,6 +39,10 @@ typedef struct stmt {
     expr_t *init, *expr, *cond, *for_cond, *for_step;
     struct stmt *then_s, *else_s, *body, *for_init;
     struct stmt **stmts; int nstmts;
+
+    /* MATCH */
+    expr_t **case_values; int ncases;
+    struct stmt *default_s;
 } stmt_t;
 
 typedef struct {

@@ -502,6 +502,29 @@ static void gen_stmt(stmt_t *s) {
             break;
         }
         case ST_BLOCK: for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]); break;
+        case ST_MATCH: {
+            int L_end = new_label();
+            int *L_case = malloc(sizeof(int) * (s->ncases + 1));
+            for (int i = 0; i < s->ncases; i++) L_case[i] = new_label();
+
+            gen_expr(s->expr);
+            emit("    mov %%rax, %%r15\n");
+            for (int i = 0; i < s->ncases; i++) {
+                gen_expr(s->case_values[i]);
+                emit("    cmp %%rax, %%r15\n");
+                emit("    je .L%d\n", L_case[i]);
+            }
+            if (s->default_s) gen_stmt(s->default_s);
+            emit("    jmp .L%d\n", L_end);
+            for (int i = 0; i < s->ncases; i++) {
+                emit(".L%d:\n", L_case[i]);
+                gen_stmt(s->stmts[i]);
+                emit("    jmp .L%d\n", L_end);
+            }
+            emit(".L%d:\n", L_end);
+            free(L_case);
+            break;
+        }
         case ST_BREAK:
             if (g_loop_depth > 0)
                 emit("    jmp .L%d\n", g_break_stack[g_loop_depth - 1]);

@@ -159,6 +159,19 @@ static void print_stmt(stmt_t *s, int d) {
         case ST_CONTINUE:
             indent(d); puts("CONTINUE");
             break;
+        case ST_MATCH:
+            indent(d); puts("MATCH");
+            print_expr(s->expr, d + 1);
+            for (int i = 0; i < s->ncases; i++) {
+                indent(d + 1); printf("case %d:\n", i);
+                print_expr(s->case_values[i], d + 2);
+                print_stmt(s->stmts[i], d + 2);
+            }
+            if (s->default_s) {
+                indent(d + 1); puts("default:");
+                print_stmt(s->default_s, d + 2);
+            }
+            break;
     }
 }
 

@@ -577,6 +577,42 @@ static int parse_modify(parser_t *P, stmt_t **out) {
     return 0;
 }
 
+static int parse_match(parser_t *P, stmt_t **out) {
+    stmt_t *s = new_stmt(ST_MATCH);
+    s->line = P->cur.line; s->col = P->cur.col;
+    p_advance(P);
+
+    if (parse_expr(P, &s->expr) < 0) return -1;
+    if (expect_punct(P, '{', "期望 '{'") < 0) return -1;
+
+    while (!is_punct(P, '}') && P->cur.kind != TOK_EOF) {
+        if (is_kw(P, KW_CASE)) {
+            p_advance(P);
+            expr_t *cv;
+            if (parse_expr(P, &cv) < 0) return -1;
+            stmt_t *body;
+            if (parse_block(P, &body) < 0) return -1;
+            s->case_values = realloc(s->case_values,
+                sizeof(expr_t*) * (s->ncases + 1));
+            s->stmts = realloc(s->stmts,
+                sizeof(stmt_t*) * (s->ncases + 1));
+            s->case_values[s->ncases] = cv;
+            s->stmts[s->ncases] = body;
+            s->ncases++;
+            continue;
+        }
+        if (is_kw(P, KW_DEFAULT)) {
+            p_advance(P);
+            if (parse_block(P, &s->default_s) < 0) return -1;
+            continue;
+        }
+        return p_err(P, "期望 '情形' 或 '默认'");
+    }
+    if (expect_punct(P, '}', "期望 '}'") < 0) return -1;
+    *out = s;
+    return 0;
+}
+
 static int parse_let(parser_t *P, stmt_t **out) {
     stmt_t *s = new_stmt(ST_LET);
     s->line = P->cur.line; s->col = P->cur.col;
@@ -715,6 +751,7 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
     if (is_kw(P, KW_WHILE))                        return parse_while(P, out);
     if (is_kw(P, KW_FOR))                          return parse_for(P, out);
     if (is_kw(P, KW_MODIFY))                       return parse_modify(P, out);
+    if (is_kw(P, KW_MATCH))                        return parse_match(P, out);
     if (is_kw(P, KW_BREAK)) {
         p_advance(P);
         if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
