@@ -143,6 +143,12 @@ static int parse_primary(parser_t *P, expr_t **out) {
         e->name = P->cur.start; e->name_len = P->cur.len;
         p_advance(P); *out = e; return 0;
     }
+    if (is_kw(P, KW_EMPTY)) {
+        expr_t *e = new_expr(EX_INT);
+        e->line = P->cur.line; e->col = P->cur.col;
+        e->ival = 0;
+        p_advance(P); *out = e; return 0;
+    }
     if (P->cur.kind == TOK_CHAR) {
         expr_t *e = new_expr(EX_INT);
         e->line = P->cur.line; e->col = P->cur.col;
@@ -648,6 +654,32 @@ static int parse_match(parser_t *P, stmt_t **out) {
     return 0;
 }
 
+static int parse_typed_let(parser_t *P, stmt_t **out) {
+    token_t type_tok = P->cur;
+    p_advance(P);
+
+    expr_t *val;
+    if (parse_expr(P, &val) < 0) return -1;
+
+    if (!is_kw(P, KW_IS)) return p_err(P, "期望 '为'");
+    p_advance(P);
+
+    if (P->cur.kind != TOK_IDENT) return p_err(P, "期望变量名");
+    const char *name = P->cur.start;
+    int nlen = P->cur.len;
+    p_advance(P);
+
+    if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+
+    stmt_t *s = new_stmt(ST_LET);
+    s->name = name; s->name_len = nlen;
+    s->type.base = type_tok.start;
+    s->type.base_len = type_tok.len;
+    s->init = val;
+    *out = s;
+    return 0;
+}
+
 static int parse_let(parser_t *P, stmt_t **out) {
     stmt_t *s = new_stmt(ST_LET);
     s->line = P->cur.line; s->col = P->cur.col;
@@ -831,6 +863,16 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
         if (next_is_is) {
             return parse_let(P, out);
         }
+    }
+
+    /* 值在前声明：整数 5 为 a; */
+    if (P->cur.kind == TOK_KEYWORD &&
+        (P->cur.kw_id == KW_INT || P->cur.kw_id == KW_LONG ||
+         P->cur.kw_id == KW_SHORT || P->cur.kw_id == KW_BYTE ||
+         P->cur.kw_id == KW_UNSIGNED || P->cur.kw_id == KW_FLOAT ||
+         P->cur.kw_id == KW_DOUBLE || P->cur.kw_id == KW_CHAR ||
+         P->cur.kw_id == KW_BOOL || P->cur.kw_id == KW_STRING)) {
+        return parse_typed_let(P, out);
     }
 
     if (is_punct(P, '{')) return parse_block(P, out);

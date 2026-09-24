@@ -64,6 +64,9 @@ typedef enum {
 
     /* 大小 */
     KW_SIZEOF,
+
+    /* 空值 */
+    KW_EMPTY,   /* ∅ */
 } kw_id_t;
 
 typedef struct {

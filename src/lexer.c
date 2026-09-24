@@ -77,6 +77,9 @@ static const kw_entry_t g_kws[] = {
 
     /* 大小 */
     { "sizeof", 6, KW_SIZEOF }, { "大小", 6, KW_SIZEOF },
+
+    /* 空值 */
+    { "∅", 3, KW_EMPTY },
 };
 
 #define KW_COUNT ((int)(sizeof(g_kws) / sizeof(g_kws[0])))
