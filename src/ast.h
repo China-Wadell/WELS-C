@@ -29,6 +29,7 @@ typedef struct expr {
     struct expr *left, *right, *operand;
     struct expr **args; int nargs;
     type_desc_t typed_type;
+    int is_postfix;
 } expr_t;
 
 typedef enum {
@@ -68,6 +69,7 @@ typedef struct { const char *text; int len; } include_t;
 typedef struct {
     const char *name; int name_len;
     int offset;
+    type_desc_t type;
 } struct_field_t;
 
 typedef struct {

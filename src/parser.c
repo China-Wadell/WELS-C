@@ -227,6 +227,15 @@ static int parse_postfix(parser_t *P, expr_t **out) {
             *out = mem;
             continue;
         }
+        if (is_op(P, "++") || is_op(P, "--")) {
+            expr_t *e = new_expr(EX_UNARY);
+            e->op_text = P->cur.start; e->op_len = P->cur.len;
+            e->operand = *out;
+            e->is_postfix = 1;
+            p_advance(P);
+            *out = e;
+            break;
+        }
         if (is_kw(P, KW_CONVERT)) {
             p_advance(P);
             if (P->cur.kind != TOK_KEYWORD) return p_err(P, "期望目标类型");
@@ -459,7 +468,9 @@ static int parse_assign(parser_t *P, expr_t **out) {
     if (parse_logic_or(P, out) < 0) return -1;
     p_peek(P);
     if (is_op(P, "=") || is_op(P, "+=") || is_op(P, "-=") ||
-        is_op(P, "*=") || is_op(P, "/=") || is_op(P, "%=")) {
+        is_op(P, "*=") || is_op(P, "/=") || is_op(P, "%=") ||
+        is_op(P, "&=") || is_op(P, "|=") || is_op(P, "^=") ||
+        is_op(P, "<<=") || is_op(P, ">>=")) {
         expr_t *e = new_expr(EX_ASSIGN);
         e->line = P->cur.line; e->col = P->cur.col;
         e->op_text = P->cur.start; e->op_len = P->cur.len;
@@ -481,23 +492,106 @@ static int parse_expr(parser_t *P, expr_t **out) {
 static int parse_struct(parser_t *P, struct_def_t *sd, int is_union) {
     memset(sd, 0, sizeof(*sd));
     sd->is_union = is_union;
-    if (P->cur.kind != TOK_IDENT) return p_err(P, "期望结构名");
-    sd->name = P->cur.start; sd->name_len = P->cur.len;
-    p_advance(P);
+    p_peek(P);
+    /* union 规范语法没有名字：联合 (名1, 名2) (类型...) { */
+    if (is_union && is_punct(P, '(')) {
+        sd->name = "union";
+        sd->name_len = 5;
+    } else {
+        if (P->cur.kind != TOK_IDENT) return p_err(P, "期望结构名");
+        sd->name = P->cur.start; sd->name_len = P->cur.len;
+        p_advance(P);
+    }
 
-    type_desc_t ty;
-    if (parse_type(P, &ty) < 0) return -1;
+    p_peek(P);
+    int mixed = is_punct(P, '(');
 
-    if (expect_punct(P, '(', "期望 '('") < 0) return -1;
-    if (!is_punct(P, ')')) {
-        for (;;) {
+    /* 规范 union：联合 (名1, 名2) (类型1 助记, 类型2 助记) { ... } */
+    if (is_union && mixed) {
+        if (expect_punct(P, '(', "期望 '('") < 0) return -1;
+        while (!is_punct(P, ')') && P->cur.kind != TOK_EOF) {
             if (P->cur.kind != TOK_IDENT) return p_err(P, "期望字段名");
             int fi = sd->nfields;
             sd->fields[fi].name = P->cur.start;
             sd->fields[fi].name_len = P->cur.len;
-            sd->fields[fi].offset = is_union ? 0 : fi * 8;
+            sd->fields[fi].offset = 0;
             sd->nfields++;
             p_advance(P);
+            p_peek(P);
+            if (is_punct(P, ',')) p_advance(P);
+        }
+        if (expect_punct(P, ')', "期望 ')'") < 0) return -1;
+
+        if (expect_punct(P, '(', "期望第二个 '('") < 0) return -1;
+        int ti = 0;
+        while (!is_punct(P, ')') && P->cur.kind != TOK_EOF) {
+            type_desc_t ft;
+            if (parse_type(P, &ft) < 0) return -1;
+            if (P->cur.kind == TOK_IDENT) p_advance(P);
+            if (ti < sd->nfields) sd->fields[ti].type = ft;
+            ti++;
+            p_peek(P);
+            if (is_punct(P, ',')) p_advance(P);
+        }
+        if (expect_punct(P, ')', "期望 ')'") < 0) return -1;
+
+        if (expect_punct(P, '{', "期望 '{'") < 0) return -1;
+        while (!is_punct(P, '}') && P->cur.kind != TOK_EOF) {
+            if (P->cur.kind != TOK_IDENT) return p_err(P, "期望实例名");
+            p_advance(P);
+            if (expect_punct(P, '(', "期望 '('") < 0) return -1;
+            int64_t v = 0;
+            if (P->cur.kind == TOK_NUM_INT) { v = P->cur.ival; p_advance(P); }
+            else if (P->cur.kind == TOK_STRING) { p_advance(P); }
+            else return p_err(P, "期望初值");
+            if (expect_punct(P, ')', "期望 ')'") < 0) return -1;
+            if (!is_kw(P, KW_IS)) return p_err(P, "期望 '为'");
+            p_advance(P);
+            if (P->cur.kind != TOK_IDENT) return p_err(P, "期望变量名");
+            int idx = sd->ninstances;
+            sd->inst_name[idx] = P->cur.start;
+            sd->inst_name_len[idx] = P->cur.len;
+            sd->inst_init[idx][0] = v;
+            sd->ninstances++;
+            p_advance(P);
+            p_peek(P);
+            if (is_punct(P, ';')) p_advance(P);
+        }
+        if (expect_punct(P, '}', "期望 '}'") < 0) return -1;
+        p_peek(P);
+        if (is_punct(P, ';')) p_advance(P);
+        return 0;
+    }
+
+    type_desc_t common_ty;
+    memset(&common_ty, 0, sizeof(common_ty));
+    if (!mixed) {
+        if (parse_type(P, &common_ty) < 0) return -1;
+    }
+
+    if (expect_punct(P, '(', "期望 '('") < 0) return -1;
+    if (!is_punct(P, ')')) {
+        for (;;) {
+            int fi = sd->nfields;
+            if (mixed) {
+                type_desc_t ft;
+                if (parse_type(P, &ft) < 0) return -1;
+                if (P->cur.kind != TOK_IDENT) return p_err(P, "期望字段名");
+                sd->fields[fi].name = P->cur.start;
+                sd->fields[fi].name_len = P->cur.len;
+                sd->fields[fi].type = ft;
+                sd->fields[fi].offset = is_union ? 0 : fi * 8;
+                sd->nfields++;
+                p_advance(P);
+            } else {
+                if (P->cur.kind != TOK_IDENT) return p_err(P, "期望字段名");
+                sd->fields[fi].name = P->cur.start;
+                sd->fields[fi].name_len = P->cur.len;
+                sd->fields[fi].type = common_ty;
+                sd->fields[fi].offset = is_union ? 0 : fi * 8;
+                sd->nfields++;
+                p_advance(P);
+            }
             p_peek(P);
             if (is_punct(P, ',')) { p_advance(P); continue; }
             break;

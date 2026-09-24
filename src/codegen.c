@@ -341,6 +341,34 @@ static void gen_expr(expr_t *e) {
             break;
         }
         case EX_UNARY:
+            if ((is_op_text(e->op_text, e->op_len, "++") ||
+                 is_op_text(e->op_text, e->op_len, "--")) &&
+                e->operand->kind == EX_IDENT) {
+                int delta = is_op_text(e->op_text, e->op_len, "++") ? 1 : -1;
+                int li = find_local(e->operand->name, e->operand->name_len);
+                int gi = (li < 0) ? find_global(e->operand->name, e->operand->name_len) : -1;
+                if (li >= 0) {
+                    int off = g_locals[li].offset;
+                    if (e->is_postfix) {
+                        emit("    movq %d(%%rbp), %%rax\n", off);
+                        emit("    lea %d(%%rax), %%rcx\n", delta);
+                        emit("    movq %%rcx, %d(%%rbp)\n", off);
+                    } else {
+                        emit("    addq $%d, %d(%%rbp)\n", delta, off);
+                        emit("    movq %d(%%rbp), %%rax\n", off);
+                    }
+                } else if (gi >= 0) {
+                    if (e->is_postfix) {
+                        emit("    movq g%d(%%rip), %%rax\n", g_globals[gi].id);
+                        emit("    lea %d(%%rax), %%rcx\n", delta);
+                        emit("    movq %%rcx, g%d(%%rip)\n", g_globals[gi].id);
+                    } else {
+                        emit("    addq $%d, g%d(%%rip)\n", delta, g_globals[gi].id);
+                        emit("    movq g%d(%%rip), %%rax\n", g_globals[gi].id);
+                    }
+                }
+                break;
+            }
             if (is_op_text(e->op_text, e->op_len, "&") && e->operand->kind == EX_IDENT) {
                 int li = find_local(e->operand->name, e->operand->name_len);
                 if (li >= 0) { emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset); break; }
@@ -389,6 +417,33 @@ static void gen_expr(expr_t *e) {
                 int li = find_local(e->left->name, e->left->name_len);
                 int gi = (li < 0) ? find_global(e->left->name, e->left->name_len) : -1;
                 if (li < 0 && gi < 0) { fprintf(stderr, "错误: 未声明的变量\n"); exit(1); }
+
+                /* 复合赋值 */
+                if (e->op_len >= 2 && e->op_text[e->op_len-1] == '=' &&
+                    !is_op_text(e->op_text, e->op_len, "==") &&
+                    !is_op_text(e->op_text, e->op_len, "\\=") &&
+                    !is_op_text(e->op_text, e->op_len, "<=") &&
+                    !is_op_text(e->op_text, e->op_len, ">=")) {
+                    if (li >= 0) emit("    movq %d(%%rbp), %%rax\n", g_locals[li].offset);
+                    else         emit("    movq g%d(%%rip), %%rax\n", g_globals[gi].id);
+                    emit("    push %%rax\n");
+                    gen_expr(e->right);
+                    emit("    mov %%rax, %%rcx\n    pop %%rax\n");
+                    if      (is_op_text(e->op_text, e->op_len, "+="))  emit("    add %%rcx, %%rax\n");
+                    else if (is_op_text(e->op_text, e->op_len, "-="))  emit("    sub %%rcx, %%rax\n");
+                    else if (is_op_text(e->op_text, e->op_len, "*="))  emit("    imul %%rcx, %%rax\n");
+                    else if (is_op_text(e->op_text, e->op_len, "/=")) { emit("    cqto\n    idiv %%rcx\n"); }
+                    else if (is_op_text(e->op_text, e->op_len, "%=")) { emit("    cqto\n    idiv %%rcx\n    mov %%rdx, %%rax\n"); }
+                    else if (is_op_text(e->op_text, e->op_len, "&="))  emit("    and %%rcx, %%rax\n");
+                    else if (is_op_text(e->op_text, e->op_len, "|="))  emit("    or  %%rcx, %%rax\n");
+                    else if (is_op_text(e->op_text, e->op_len, "^="))  emit("    xor %%rcx, %%rax\n");
+                    else if (is_op_text(e->op_text, e->op_len, "<<=")) emit("    shl %%cl, %%rax\n");
+                    else if (is_op_text(e->op_text, e->op_len, ">>=")) emit("    sar %%cl, %%rax\n");
+                    if (li >= 0) emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
+                    else         emit("    movq %%rax, g%d(%%rip)\n", g_globals[gi].id);
+                    break;
+                }
+
                 gen_expr(e->right);
                 if (li >= 0) {
                     if (g_locals[li].is_range) {
@@ -499,6 +554,36 @@ static void gen_binop_float(const char *op, int len) {
     else if (is_op_text(op, len, ">"))  emit("    comisd %%xmm1, %%xmm0\n    seta %%al\n    movzbq %%al, %%rax\n");
     else if (is_op_text(op, len, "<=")) emit("    comisd %%xmm1, %%xmm0\n    setbe %%al\n    movzbq %%al, %%rax\n");
     else if (is_op_text(op, len, ">=")) emit("    comisd %%xmm1, %%xmm0\n    setae %%al\n    movzbq %%al, %%rax\n");
+}
+
+/* 扫描函数体，统计需要的栈空间（字节） */
+static int scan_frame(stmt_t *s) {
+    if (!s) return 0;
+    int bytes = 0;
+    switch (s->kind) {
+        case ST_LET: {
+            if (s->type.is_static) break;
+            if (s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT)
+                bytes += 8 * s->init->nargs;
+            else
+                bytes += 8;
+            break;
+        }
+        case ST_BLOCK:
+            for (int i = 0; i < s->nstmts; i++) bytes += scan_frame(s->stmts[i]);
+            break;
+        case ST_IF:
+            bytes += scan_frame(s->then_s);
+            bytes += scan_frame(s->else_s);
+            break;
+        case ST_WHILE:
+        case ST_FOR:
+            bytes += scan_frame(s->body);
+            if (s->kind == ST_FOR) bytes += scan_frame(s->for_init);
+            break;
+        default: break;
+    }
+    return bytes;
 }
 
 static void gen_stmt(stmt_t *s) {
@@ -699,7 +784,14 @@ static void gen_func(func_t *f) {
     if ((nlen == 3 && memcmp(name, "主", 3) == 0) ||
         (nlen == 4 && memcmp(name, "main", 4) == 0)) emit("main:\n");
     else emit("%.*s:\n", nlen, name);
-    emit("    push %%rbp\n    mov %%rsp, %%rbp\n    sub $1024, %%rsp\n");
+    emit("    push %%rbp\n    mov %%rsp, %%rbp\n");
+
+    /* 动态栈帧大小：扫描 AST 算字节数，16 字节对齐 */
+    int frame = scan_frame(f->body);
+    frame += 8 * f->nparams;   /* 参数落栈 */
+    frame = (frame + 15) & ~15;
+    if (frame < 16) frame = 16;
+    emit("    sub $%d, %%rsp\n", frame);
     static const char *pregs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     static const char *pregs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
     const char **pregs = g_target_windows ? pregs_windows : pregs_linux;
