@@ -702,6 +702,50 @@ static int parse_asm(parser_t *P, stmt_t **out) {
     return 0;
 }
 
+static int parse_cont_decl(parser_t *P, stmt_t **out) {
+    p_advance(P);
+    if (P->cur.kind != TOK_IDENT) return p_err(P, "期望容器名");
+    stmt_t *s = new_stmt(ST_CONT_DECL);
+    s->name = P->cur.start;
+    s->name_len = P->cur.len;
+    p_advance(P);
+    if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+    *out = s;
+    return 0;
+}
+
+static int parse_cont_take(parser_t *P, stmt_t **out) {
+    p_advance(P);
+    if (P->cur.kind != TOK_IDENT) return p_err(P, "期望容器名");
+    stmt_t *s = new_stmt(ST_CONT_TAKE);
+    s->expr = new_expr(EX_IDENT);
+    s->expr->name = P->cur.start;
+    s->expr->name_len = P->cur.len;
+    p_advance(P);
+    if (is_op(P, "=")) {
+        p_advance(P);
+        if (P->cur.kind != TOK_IDENT) return p_err(P, "期望目标变量");
+        s->name = P->cur.start;
+        s->name_len = P->cur.len;
+        p_advance(P);
+    }
+    if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+    *out = s;
+    return 0;
+}
+
+static int parse_cont_clear(parser_t *P, stmt_t **out) {
+    p_advance(P);
+    if (P->cur.kind != TOK_IDENT) return p_err(P, "期望容器名");
+    stmt_t *s = new_stmt(ST_CONT_CLEAR);
+    s->name = P->cur.start;
+    s->name_len = P->cur.len;
+    p_advance(P);
+    if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+    *out = s;
+    return 0;
+}
+
 static int parse_let(parser_t *P, stmt_t **out) {
     stmt_t *s = new_stmt(ST_LET);
     s->line = P->cur.line; s->col = P->cur.col;
@@ -841,6 +885,9 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
     if (is_kw(P, KW_FOR))                          return parse_for(P, out);
     if (is_kw(P, KW_MODIFY))                       return parse_modify(P, out);
     if (is_kw(P, KW_MATCH))                        return parse_match(P, out);
+    if (is_kw(P, KW_CONTAINER))                    return parse_cont_decl(P, out);
+    if (is_kw(P, KW_TAKE))                         return parse_cont_take(P, out);
+    if (is_kw(P, KW_CLEAR))                        return parse_cont_clear(P, out);
     if (is_kw(P, KW_SET)) {
         p_advance(P);
         return parse_stmt(P, out);
@@ -896,6 +943,43 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
         P->cur = save_cur;
         if (next_is_is) {
             return parse_let(P, out);
+        }
+    }
+
+    /* 容器 put：5 为 a;  "hello" 为 a; */
+    if (P->cur.kind == TOK_NUM_INT ||
+        P->cur.kind == TOK_NUM_FLOAT ||
+        P->cur.kind == TOK_STRING) {
+        token_t  save_cur  = P->cur;
+        lexer_t  save_lex  = *P->L;
+        int      save_hn   = P->has_next;
+        token_t  save_next = P->next;
+
+        expr_t *val;
+        int ok = 0;
+        if (parse_expr(P, &val) == 0 && is_kw(P, KW_IS)) {
+            p_advance(P);
+            if (P->cur.kind == TOK_IDENT) {
+                token_t idtok = P->cur;
+                p_advance(P);
+                if (is_punct(P, ';')) {
+                    p_advance(P);
+                    stmt_t *s = new_stmt(ST_CONT_PUT);
+                    s->expr = val;
+                    s->name = idtok.start;
+                    s->name_len = idtok.len;
+                    *out = s;
+                    ok = 1;
+                }
+            }
+        }
+        if (!ok) {
+            P->cur = save_cur;
+            *P->L = save_lex;
+            P->has_next = save_hn;
+            P->next = save_next;
+        } else {
+            return 0;
         }
     }
 
@@ -967,6 +1051,12 @@ static int parse_func(parser_t *P, func_t **out) {
     if (!is_punct(P, ')')) {
         for (;;) {
             p_peek(P);
+            /* 变长参数 ... */
+            if (is_op(P, "...")) {
+                f->has_varargs = 1;
+                p_advance(P);
+                break;
+            }
             if (P->cur.kind != TOK_IDENT) return p_err(P, "期望参数名");
             const char *nm = P->cur.start;
             int nml = P->cur.len;

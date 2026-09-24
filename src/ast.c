@@ -173,6 +173,20 @@ static void print_stmt(stmt_t *s, int d) {
         case ST_GOTO:
             indent(d); printf("GOTO(%.*s)\n", s->name_len, s->name);
             break;
+        case ST_CONT_DECL:
+            indent(d); printf("CONT_DECL(%.*s)\n", s->name_len, s->name);
+            break;
+        case ST_CONT_PUT:
+            indent(d); printf("CONT_PUT(%.*s)\n", s->name_len, s->name);
+            print_expr(s->expr, d + 1);
+            break;
+        case ST_CONT_TAKE:
+            indent(d); printf("CONT_TAKE(%.*s) -> %.*s\n",
+                s->expr->name_len, s->expr->name, s->name_len, s->name);
+            break;
+        case ST_CONT_CLEAR:
+            indent(d); printf("CONT_CLEAR(%.*s)\n", s->name_len, s->name);
+            break;
         case ST_ASM:
             indent(d); puts("ASM {");
             for (int i = 0; i < s->nstmts; i++) print_stmt(s->stmts[i], d + 1);

@@ -32,6 +32,7 @@ typedef struct expr {
 typedef enum {
     ST_LET, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK,
     ST_BREAK, ST_CONTINUE, ST_MATCH, ST_LABEL, ST_GOTO, ST_ASM,
+    ST_CONT_DECL, ST_CONT_PUT, ST_CONT_TAKE, ST_CONT_CLEAR,
 } stmt_kind_t;
 
 typedef struct stmt {
@@ -56,6 +57,7 @@ typedef struct {
     const char *name; int name_len;
     param_t *params; int nparams;
     type_desc_t ret_type; int has_ret;
+    int has_varargs;
     stmt_t *body;
 } func_t;
 

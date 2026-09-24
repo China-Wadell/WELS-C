@@ -101,7 +101,7 @@ static int kw_lookup(const char *s, int len) {
 typedef struct { const char *text; int len; } op_entry_t;
 
 static const op_entry_t g_ops[] = {
-    { "**", 2 }, { "<<=", 3 }, { ">>=", 3 },
+    { "**", 2 }, { "<<=", 3 }, { ">>=", 3 }, { "...", 3 },
     { "==", 2 }, { "\\=", 2 }, { "<=", 2 }, { ">=", 2 },
     { "&&", 2 }, { "||", 2 }, { "<<", 2 }, { ">>", 2 },
     { "+=", 2 }, { "-=", 2 }, { "*=", 2 }, { "/=", 2 },

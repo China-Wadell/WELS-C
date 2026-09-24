@@ -17,6 +17,8 @@ void codegen_set_target(int is_windows) { g_target_windows = is_windows; }
 typedef struct {
     const char *name; int len; int offset;
     int is_array; int arr_len; int is_float;
+    int is_container;
+    int cont_type;   /* 0=无, 1=整数, 2=字符串, 3=浮点 */
 } local_t;
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
@@ -46,6 +48,21 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].is_array = is_array;
     g_locals[g_nlocals].arr_len = arr_len;
     g_locals[g_nlocals].is_float = is_float;
+    g_locals[g_nlocals].is_container = 0;
+    g_locals[g_nlocals].cont_type = 0;
+    g_nlocals++;
+    return -g_stack_used;
+}
+
+static int local_add_cont(const char *name, int len) {
+    g_stack_used += 16;
+    g_locals[g_nlocals].name = name; g_locals[g_nlocals].len = len;
+    g_locals[g_nlocals].offset = -g_stack_used;
+    g_locals[g_nlocals].is_array = 0;
+    g_locals[g_nlocals].arr_len = 0;
+    g_locals[g_nlocals].is_float = 0;
+    g_locals[g_nlocals].is_container = 1;
+    g_locals[g_nlocals].cont_type = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -102,7 +119,10 @@ static int expr_is_float(expr_t *e) {
         case EX_FLOAT: return 1;
         case EX_IDENT: {
             int li = find_local(e->name, e->name_len);
-            if (li >= 0) return g_locals[li].is_float;
+            if (li >= 0) {
+                if (g_locals[li].cont_type == 3) return 1;
+                return g_locals[li].is_float;
+            }
             int gi = find_global(e->name, e->name_len);
             if (gi >= 0) return g_globals[gi].is_float;
             return 0;
@@ -111,6 +131,16 @@ static int expr_is_float(expr_t *e) {
         case EX_UNARY:  return expr_is_float(e->operand);
         default: return 0;
     }
+}
+
+static int expr_is_string(expr_t *e) {
+    if (!e) return 0;
+    if (e->kind == EX_STRING) return 1;
+    if (e->kind == EX_IDENT) {
+        int li = find_local(e->name, e->name_len);
+        if (li >= 0 && g_locals[li].cont_type == 2) return 1;
+    }
+    return 0;
 }
 
 static void gen_load_var(const char *name, int len) {
@@ -221,7 +251,7 @@ static void gen_call(expr_t *e) {
     if (is_print) {
         for (int i = 0; i < n; i++) {
             int is_f = expr_is_float(e->args[i]);
-            int is_str = (e->args[i]->kind == EX_STRING);
+            int is_str = expr_is_string(e->args[i]);
             gen_expr(e->args[i]);
             if (is_f) {
                 if (g_target_windows) emit("    lea .Lfmt_f(%%rip), %%rcx\n");
@@ -543,6 +573,66 @@ static void gen_stmt(stmt_t *s) {
             }
             emit(".L%d:\n", L_end);
             free(L_case);
+            break;
+        }
+        case ST_CONT_DECL: {
+            int off = local_add_cont(s->name, s->name_len);
+            emit("    movq $0, %d(%%rbp)\n", off);
+            emit("    movq $0, %d(%%rbp)\n", off + 8);
+            break;
+        }
+        case ST_CONT_PUT: {
+            int i = find_local(s->name, s->name_len);
+            int off = g_locals[i].offset;
+            expr_t *v = s->expr;
+            if (v->kind == EX_INT) {
+                g_locals[i].cont_type = 1;
+                emit("    movq $1, %d(%%rbp)\n", off);
+                emit("    movq $%lld, %d(%%rbp)\n", (long long)v->ival, off + 8);
+            } else if (v->kind == EX_FLOAT) {
+                g_locals[i].cont_type = 3;
+                int id = float_add(v->fval);
+                emit("    movq $3, %d(%%rbp)\n", off);
+                emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id);
+                emit("    movsd %%xmm0, %d(%%rbp)\n", off + 8);
+            } else if (v->kind == EX_STRING) {
+                g_locals[i].cont_type = 2;
+                int id = str_add(v->name, v->name_len);
+                emit("    movq $2, %d(%%rbp)\n", off);
+                emit("    lea .Lstr%d(%%rip), %%rax\n", id);
+                emit("    movq %%rax, %d(%%rbp)\n", off + 8);
+            } else {
+                g_locals[i].cont_type = 1;
+                gen_expr(v);
+                emit("    movq $1, %d(%%rbp)\n", off);
+                emit("    movq %%rax, %d(%%rbp)\n", off + 8);
+            }
+            break;
+        }
+        case ST_CONT_TAKE: {
+            int i = find_local(s->expr->name, s->expr->name_len);
+            int off = g_locals[i].offset;
+            if (s->name) {
+                int ct = g_locals[i].cont_type;
+                int ti = find_local(s->name, s->name_len);
+                int toff;
+                if (ti < 0) {
+                    toff = local_add(s->name, s->name_len);
+                    ti = g_nlocals - 1;
+                } else {
+                    toff = g_locals[ti].offset;
+                }
+                g_locals[ti].cont_type = ct;
+                emit("    movq %d(%%rbp), %%rax\n", off + 8);
+                emit("    movq %%rax, %d(%%rbp)\n", toff);
+            }
+            break;
+        }
+        case ST_CONT_CLEAR: {
+            int i = find_local(s->name, s->name_len);
+            int off = g_locals[i].offset;
+            emit("    movq $0, %d(%%rbp)\n", off);
+            emit("    movq $0, %d(%%rbp)\n", off + 8);
             break;
         }
         case ST_ASM:
