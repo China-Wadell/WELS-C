@@ -67,6 +67,13 @@ typedef enum {
 
     /* 空值 */
     KW_EMPTY,   /* ∅ */
+
+    /* 声明前缀（可忽略） */
+    KW_SET,      /* 设 */
+
+    /* 模块 */
+    KW_CALL,     /* 调用 / call */
+    KW_IMPORT,   /* 导入 / import */
 } kw_id_t;
 
 typedef struct {

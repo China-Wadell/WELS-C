@@ -105,6 +105,42 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
         char c = src[i];
 
         if (at_line_start && c == '#') {
+            /* #导入<path 模块名> / #import<path name> */
+            if (starts_with(src + i, len - i, "#导入<") ||
+                starts_with(src + i, len - i, "#import<")) {
+                if (g_skipping) { i = skip_to_eol(src, len, i); at_line_start = 1; continue; }
+                int k = starts_with(src + i, len - i, "#import<") ? i + 8 : i + 8;
+                int j = k;
+                while (j < len && src[j] != '>' && src[j] != '\n') j++;
+                if (j < len && src[j] == '>') {
+                    /* 路径与模块名以空格分隔；取第一段为路径 */
+                    int plen = j - k;
+                    while (plen > 0 && (src[k+plen-1] == ' ' || src[k+plen-1] == '\t')) plen--;
+                    int path_end = 0;
+                    while (path_end < plen && src[k+path_end] != ' ' && src[k+path_end] != '\t') path_end++;
+
+                    char path[512];
+                    if (path_end >= 512) path_end = 511;
+                    memcpy(path, src + k, path_end);
+                    path[path_end] = 0;
+
+                    char full[1024];
+                    if (path[0] == '/' || path[0] == '\\') snprintf(full, sizeof(full), "%s", path);
+                    else                                     snprintf(full, sizeof(full), "%s/%s", base_dir, path);
+
+                    if (!already_included(full)) {
+                        int hlen;
+                        char *hsrc = read_file(full, &hlen);
+                        if (!hsrc) { fprintf(stderr, "错误: 无法打开模块 %s\n", full); exit(1); }
+                        if (g_nincluded < MAX_INCLUDE) g_included[g_nincluded++] = strdup(full);
+                        char *exp = pp_process(hsrc, hlen, base_dir, depth + 1);
+                        free(hsrc);
+                        sb_append(&out, exp, (int)strlen(exp));
+                        free(exp);
+                    }
+                    i = j + 1; at_line_start = 0; continue;
+                }
+            }
             /* #<file> */
             if (i + 1 < len && src[i+1] == '<') {
                 if (g_skipping) { i = skip_to_eol(src, len, i); at_line_start = 1; continue; }

@@ -841,6 +841,17 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
     if (is_kw(P, KW_FOR))                          return parse_for(P, out);
     if (is_kw(P, KW_MODIFY))                       return parse_modify(P, out);
     if (is_kw(P, KW_MATCH))                        return parse_match(P, out);
+    if (is_kw(P, KW_SET)) {
+        p_advance(P);
+        return parse_stmt(P, out);
+    }
+    if (is_kw(P, KW_CALL)) {
+        /* 调用 模块名 { ... }  — 模块名仅作占位，块内直接编译 */
+        p_advance(P);
+        if (P->cur.kind != TOK_IDENT) return p_err(P, "期望模块名");
+        p_advance(P);
+        return parse_block(P, out);
+    }
     if (is_kw(P, KW_ASM))                          return parse_asm(P, out);
     if (is_kw(P, KW_LABEL)) {
         p_advance(P);

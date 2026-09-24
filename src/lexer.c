@@ -80,6 +80,13 @@ static const kw_entry_t g_kws[] = {
 
     /* 空值 */
     { "∅", 3, KW_EMPTY },
+
+    /* 声明前缀 */
+    { "设", 3, KW_SET },
+
+    /* 模块 */
+    { "call", 4, KW_CALL }, { "调用", 6, KW_CALL },
+    { "import", 6, KW_IMPORT }, { "导入", 6, KW_IMPORT },
 };
 
 #define KW_COUNT ((int)(sizeof(g_kws) / sizeof(g_kws[0])))
