@@ -3,11 +3,12 @@
 
 #include "wescc.h"
 
-/* ============ 表达式 ============ */
 typedef enum {
     EX_INT, EX_FLOAT, EX_STRING, EX_IDENT,
     EX_BINARY, EX_UNARY, EX_CALL, EX_ASSIGN,
     EX_CONST_DECL,
+    EX_ARRAY_INIT,
+    EX_INDEX,
 } expr_kind_t;
 
 typedef struct expr {
@@ -18,7 +19,6 @@ typedef struct expr {
     double  fval;
 
     const char *name; int name_len;
-
     const char *op_text; int op_len;
 
     struct expr *left;
@@ -29,9 +29,8 @@ typedef struct expr {
     int           nargs;
 } expr_t;
 
-/* ============ 类型描述 ============ */
 typedef struct {
-    const char *base;   int base_len;    /* 基础类型关键字文本 */
+    const char *base;   int base_len;
     int         is_ptr;
     int         is_ref;
     int         is_array;
@@ -42,42 +41,33 @@ typedef struct {
     int         is_container;
 } type_desc_t;
 
-/* ============ 语句 ============ */
 typedef enum {
-    ST_LET,       /* 名 为 类型 值; */
-    ST_EXPR,      /* 表达式 ; */
-    ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK,
+    ST_LET, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK,
 } stmt_kind_t;
 
 typedef struct stmt {
     stmt_kind_t kind;
     int line, col;
 
-    /* LET */
     type_desc_t type;
     const char *name; int name_len;
     expr_t     *init;
 
-    /* EXPR / RETURN */
     expr_t *expr;
 
-    /* IF / WHILE */
     expr_t *cond;
     struct stmt *then_s;
     struct stmt *else_s;
     struct stmt *body;
 
-    /* FOR */
     struct stmt *for_init;
     expr_t      *for_cond;
     expr_t      *for_step;
 
-    /* BLOCK */
     struct stmt **stmts;
     int           nstmts;
 } stmt_t;
 
-/* ============ 函数 ============ */
 typedef struct {
     const char *name; int name_len;
     type_desc_t type;
@@ -91,7 +81,6 @@ typedef struct {
     stmt_t      *body;
 } func_t;
 
-/* ============ 程序 ============ */
 typedef struct {
     const char *text; int len;
 } include_t;

@@ -14,6 +14,8 @@ typedef struct {
     const char *name;
     int         len;
     int         offset;
+    int         is_array;
+    int         arr_len;
 } local_t;
 
 static local_t g_locals[MAX_LOCALS];
@@ -29,21 +31,32 @@ static void emit(const char *fmt, ...) {
 
 static int new_label(void) { return g_label++; }
 
-static int local_add(const char *name, int len) {
-    g_stack_used += 8;
-    g_locals[g_nlocals].name = name;
-    g_locals[g_nlocals].len = len;
-    g_locals[g_nlocals].offset = -g_stack_used;
+static int local_add_ex(const char *name, int len, int is_array, int arr_len) {
+    int slots = is_array ? arr_len : 1;
+    g_stack_used += 8 * slots;
+    g_locals[g_nlocals].name     = name;
+    g_locals[g_nlocals].len      = len;
+    g_locals[g_nlocals].offset   = -g_stack_used;
+    g_locals[g_nlocals].is_array = is_array;
+    g_locals[g_nlocals].arr_len  = arr_len;
     g_nlocals++;
     return -g_stack_used;
 }
 
-static int local_find(const char *name, int len) {
+static int local_add(const char *name, int len) {
+    return local_add_ex(name, len, 0, 1);
+}
+
+static int local_find_idx(const char *name, int len) {
     for (int i = g_nlocals - 1; i >= 0; i--)
         if (g_locals[i].len == len && memcmp(g_locals[i].name, name, len) == 0)
-            return g_locals[i].offset;
+            return i;
     fprintf(stderr, "错误: 未声明的变量 %.*s\n", len, name);
     exit(1);
+}
+
+static int local_find(const char *name, int len) {
+    return g_locals[local_find_idx(name, len)].offset;
 }
 
 static int is_op_text(const char *t, int len, const char *s) {
@@ -123,8 +136,12 @@ static void gen_expr(expr_t *e) {
             break;
         }
         case EX_IDENT: {
-            int off = local_find(e->name, e->name_len);
-            emit("    movq %d(%%rbp), %%rax\n", off);
+            int i = local_find_idx(e->name, e->name_len);
+            if (g_locals[i].is_array) {
+                emit("    lea %d(%%rbp), %%rax\n", g_locals[i].offset);
+            } else {
+                emit("    movq %d(%%rbp), %%rax\n", g_locals[i].offset);
+            }
             break;
         }
         case EX_UNARY:
@@ -153,18 +170,37 @@ static void gen_expr(expr_t *e) {
             emit("    pop %%rcx\n");
             gen_binop(e->op_text, e->op_len);
             break;
-        case EX_ASSIGN:
+        case EX_INDEX:
+            gen_expr(e->left);
+            emit("    push %%rax\n");
             gen_expr(e->right);
+            emit("    mov %%rax, %%rcx\n");
+            emit("    pop %%rax\n");
+            emit("    mov (%%rax, %%rcx, 8), %%rax\n");
+            break;
+        case EX_ASSIGN:
             if (e->left->kind == EX_IDENT) {
+                gen_expr(e->right);
                 int off = local_find(e->left->name, e->left->name_len);
                 emit("    movq %%rax, %d(%%rbp)\n", off);
             }
             else if (e->left->kind == EX_UNARY &&
                      is_op_text(e->left->op_text, e->left->op_len, "*") &&
                      e->left->operand->kind == EX_IDENT) {
+                gen_expr(e->right);
                 int off = local_find(e->left->operand->name, e->left->operand->name_len);
                 emit("    movq %d(%%rbp), %%rcx\n", off);
                 emit("    movq %%rax, (%%rcx)\n");
+            }
+            else if (e->left->kind == EX_INDEX) {
+                gen_expr(e->left->left);
+                emit("    push %%rax\n");
+                gen_expr(e->left->right);
+                emit("    push %%rax\n");
+                gen_expr(e->right);
+                emit("    pop %%rcx\n");
+                emit("    pop %%rdx\n");
+                emit("    movq %%rax, (%%rdx, %%rcx, 8)\n");
             }
             break;
         case EX_CALL:
@@ -220,10 +256,19 @@ static void gen_stmt(stmt_t *s) {
     if (!s) return;
     switch (s->kind) {
         case ST_LET: {
-            if (s->init) gen_expr(s->init);
-            else emit("    movq $0, %%rax\n");
-            int off = local_add(s->name, s->name_len);
-            emit("    movq %%rax, %d(%%rbp)\n", off);
+            if (s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT) {
+                int n = s->init->nargs;
+                int base = local_add_ex(s->name, s->name_len, 1, n);
+                for (int i = 0; i < n; i++) {
+                    gen_expr(s->init->args[i]);
+                    emit("    movq %%rax, %d(%%rbp)\n", base + i * 8);
+                }
+            } else {
+                if (s->init) gen_expr(s->init);
+                else emit("    movq $0, %%rax\n");
+                int off = local_add(s->name, s->name_len);
+                emit("    movq %%rax, %d(%%rbp)\n", off);
+            }
             break;
         }
         case ST_EXPR:

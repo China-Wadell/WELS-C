@@ -155,6 +155,21 @@ static int parse_primary(parser_t *P, expr_t **out) {
         e->name = P->cur.start; e->name_len = P->cur.len;
         p_advance(P); *out = e; return 0;
     }
+    if (is_punct(P, '{')) {
+        p_advance(P);
+        expr_t *e = new_expr(EX_ARRAY_INIT);
+        e->line = P->cur.line; e->col = P->cur.col;
+        while (!is_punct(P, '}') && P->cur.kind != TOK_EOF) {
+            expr_t *elem;
+            if (parse_expr(P, &elem) < 0) return -1;
+            e->args = realloc(e->args, sizeof(expr_t*) * (e->nargs + 1));
+            e->args[e->nargs++] = elem;
+            p_peek(P);
+            if (is_punct(P, ',')) p_advance(P);
+        }
+        if (expect_punct(P, '}', "期望 '}'") < 0) return -1;
+        *out = e; return 0;
+    }
     if (is_punct(P, '(')) {
         p_advance(P);
         if (parse_expr(P, out) < 0) return -1;
@@ -165,24 +180,36 @@ static int parse_primary(parser_t *P, expr_t **out) {
 
 static int parse_postfix(parser_t *P, expr_t **out) {
     if (parse_primary(P, out) < 0) return -1;
-    p_peek(P);
-    if (is_punct(P, '(')) {
-        p_advance(P);
-        expr_t *call = new_expr(EX_CALL);
-        call->line = (*out)->line; call->col = (*out)->col;
-        call->operand = *out;
-
-        /* 参数之间逗号可选 */
-        while (!is_punct(P, ')') && P->cur.kind != TOK_EOF) {
-            expr_t *arg;
-            if (parse_expr(P, &arg) < 0) return -1;
-            call->args = realloc(call->args, sizeof(expr_t*) * (call->nargs + 1));
-            call->args[call->nargs++] = arg;
-            p_peek(P);
-            if (is_punct(P, ',')) p_advance(P);
+    for (;;) {
+        p_peek(P);
+        if (is_punct(P, '(')) {
+            p_advance(P);
+            expr_t *call = new_expr(EX_CALL);
+            call->line = (*out)->line; call->col = (*out)->col;
+            call->operand = *out;
+            while (!is_punct(P, ')') && P->cur.kind != TOK_EOF) {
+                expr_t *arg;
+                if (parse_expr(P, &arg) < 0) return -1;
+                call->args = realloc(call->args, sizeof(expr_t*) * (call->nargs + 1));
+                call->args[call->nargs++] = arg;
+                p_peek(P);
+                if (is_punct(P, ',')) p_advance(P);
+            }
+            if (expect_punct(P, ')', "期望 ')'") < 0) return -1;
+            *out = call;
+            continue;
         }
-        if (expect_punct(P, ')', "期望 ')'") < 0) return -1;
-        *out = call;
+        if (is_punct(P, '[')) {
+            p_advance(P);
+            expr_t *idx = new_expr(EX_INDEX);
+            idx->line = (*out)->line; idx->col = (*out)->col;
+            idx->left = *out;
+            if (parse_expr(P, &idx->right) < 0) return -1;
+            if (expect_punct(P, ']', "期望 ']'") < 0) return -1;
+            *out = idx;
+            continue;
+        }
+        break;
     }
     return 0;
 }

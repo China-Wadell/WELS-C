@@ -72,6 +72,15 @@ static void print_expr(expr_t *e, int d) {
         case EX_CONST_DECL:
             printf("CONST(%.*s)\n", e->name_len, e->name);
             break;
+        case EX_ARRAY_INIT:
+            puts("ARRAY_INIT");
+            for (int i = 0; i < e->nargs; i++) print_expr(e->args[i], d + 1);
+            break;
+        case EX_INDEX:
+            puts("INDEX");
+            print_expr(e->left, d + 1);
+            print_expr(e->right, d + 1);
+            break;
     }
 }
 
