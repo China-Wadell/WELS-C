@@ -221,6 +221,18 @@ static int parse_postfix(parser_t *P, expr_t **out) {
             *out = mem;
             continue;
         }
+        if (is_op(P, "->")) {
+            p_advance(P);
+            if (P->cur.kind != TOK_IDENT) return p_err(P, "期望字段名");
+            expr_t *mem = new_expr(EX_ARROW);
+            mem->line = (*out)->line; mem->col = (*out)->col;
+            mem->left = *out;
+            mem->name = P->cur.start;
+            mem->name_len = P->cur.len;
+            p_advance(P);
+            *out = mem;
+            continue;
+        }
         break;
     }
     return 0;
@@ -425,8 +437,9 @@ static int parse_expr(parser_t *P, expr_t **out) {
 /* ============ 语句 ============ */
 
 /* 变量名 为 类型 值; */
-static int parse_struct(parser_t *P, struct_def_t *sd) {
+static int parse_struct(parser_t *P, struct_def_t *sd, int is_union) {
     memset(sd, 0, sizeof(*sd));
+    sd->is_union = is_union;
     if (P->cur.kind != TOK_IDENT) return p_err(P, "期望结构名");
     sd->name = P->cur.start; sd->name_len = P->cur.len;
     p_advance(P);
@@ -441,7 +454,7 @@ static int parse_struct(parser_t *P, struct_def_t *sd) {
             int fi = sd->nfields;
             sd->fields[fi].name = P->cur.start;
             sd->fields[fi].name_len = P->cur.len;
-            sd->fields[fi].offset = fi * 8;
+            sd->fields[fi].offset = is_union ? 0 : fi * 8;
             sd->nfields++;
             p_advance(P);
             p_peek(P);
@@ -842,7 +855,14 @@ int parse_program(lexer_t *L, program_t *out) {
         if (is_kw(&P, KW_STRUCT)) {
             p_advance(&P);
             out->structs = realloc(out->structs, sizeof(struct_def_t) * (out->nstructs + 1));
-            if (parse_struct(&P, &out->structs[out->nstructs]) < 0) return -1;
+            if (parse_struct(&P, &out->structs[out->nstructs], 0) < 0) return -1;
+            out->nstructs++;
+            continue;
+        }
+        if (is_kw(&P, KW_UNION)) {
+            p_advance(&P);
+            out->structs = realloc(out->structs, sizeof(struct_def_t) * (out->nstructs + 1));
+            if (parse_struct(&P, &out->structs[out->nstructs], 1) < 0) return -1;
             out->nstructs++;
             continue;
         }

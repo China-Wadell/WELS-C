@@ -8,7 +8,7 @@
 typedef enum {
     EX_INT, EX_FLOAT, EX_STRING, EX_IDENT,
     EX_BINARY, EX_UNARY, EX_CALL, EX_ASSIGN,
-    EX_CONST_DECL, EX_ARRAY_INIT, EX_INDEX, EX_MEMBER,
+    EX_CONST_DECL, EX_ARRAY_INIT, EX_INDEX, EX_MEMBER, EX_ARROW,
 } expr_kind_t;
 
 typedef struct expr {
@@ -62,6 +62,7 @@ typedef struct {
 
 typedef struct {
     const char *name; int name_len;
+    int is_union;
     struct_field_t fields[MAX_STRUCT_FIELDS];
     int nfields;
     const char *inst_name[MAX_STRUCT_INSTANCES];

@@ -185,8 +185,12 @@ static void emit_globals(void) {
         emit("    .align 8\ng%d:\n", g->id);
         if (g->is_struct_inst) {
             struct_def_t *sd = &g_prog->structs[g->struct_idx];
-            for (int k = 0; k < sd->nfields; k++)
-                emit("    .quad %lld\n", (long long)sd->inst_init[g->inst_idx][k]);
+            if (sd->is_union) {
+                emit("    .quad %lld\n", (long long)sd->inst_init[g->inst_idx][0]);
+            } else {
+                for (int k = 0; k < sd->nfields; k++)
+                    emit("    .quad %lld\n", (long long)sd->inst_init[g->inst_idx][k]);
+            }
         } else {
             stmt_t *d = g->decl;
             if (g->is_array) {
@@ -253,7 +257,6 @@ static void gen_expr(expr_t *e) {
         case EX_STRING: { int id = str_add(e->name, e->name_len); emit("    lea .Lstr%d(%%rip), %%rax\n", id); break; }
         case EX_IDENT: gen_load_var(e->name, e->name_len); break;
         case EX_MEMBER: {
-            /* 左必须是 IDENT（实例名） */
             if (e->left->kind != EX_IDENT) { fprintf(stderr, "错误: . 左边须是实例名\n"); exit(1); }
             int gi = find_global(e->left->name, e->left->name_len);
             if (gi < 0 || !g_globals[gi].is_struct_inst) {
@@ -265,6 +268,21 @@ static void gen_expr(expr_t *e) {
             if (fi < 0) { fprintf(stderr, "错误: 结构无字段 %.*s\n", e->name_len, e->name); exit(1); }
             emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
             emit("    mov %d(%%rax), %%rax\n", sd->fields[fi].offset);
+            break;
+        }
+        case EX_ARROW: {
+            /* p->x：p 是指针，字段名全局搜索 */
+            gen_expr(e->left);
+            int fi = -1;
+            for (int si = 0; si < g_prog->nstructs && fi < 0; si++) {
+                fi = find_struct_field(&g_prog->structs[si], e->name, e->name_len);
+                if (fi >= 0) {
+                    int off = g_prog->structs[si].fields[fi].offset;
+                    emit("    mov %d(%%rax), %%rax\n", off);
+                    break;
+                }
+            }
+            if (fi < 0) { fprintf(stderr, "错误: 无字段 %.*s\n", e->name_len, e->name); exit(1); }
             break;
         }
         case EX_UNARY:
@@ -334,6 +352,22 @@ static void gen_expr(expr_t *e) {
                 emit("    mov %%rax, %%rcx\n");
                 emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
                 emit("    mov %%rcx, %d(%%rax)\n", sd->fields[fi].offset);
+            }
+            else if (e->left->kind == EX_ARROW) {
+                gen_expr(e->left->left);       /* rax = 指针 */
+                emit("    push %%rax\n");
+                gen_expr(e->right);            /* rax = 值 */
+                emit("    pop %%rcx\n");       /* rcx = 指针 */
+                int fi = -1;
+                for (int si = 0; si < g_prog->nstructs && fi < 0; si++) {
+                    fi = find_struct_field(&g_prog->structs[si], e->left->name, e->left->name_len);
+                    if (fi >= 0) {
+                        int off = g_prog->structs[si].fields[fi].offset;
+                        emit("    mov %%rax, %d(%%rcx)\n", off);
+                        break;
+                    }
+                }
+                if (fi < 0) { fprintf(stderr, "错误\n"); exit(1); }
             }
             else if (e->left->kind == EX_UNARY &&
                      is_op_text(e->left->op_text, e->left->op_len, "*") &&
