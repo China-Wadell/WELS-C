@@ -27,6 +27,7 @@ typedef enum {
     /* 声明 */
     KW_IS,       /* 为 / is */
     KW_CONST,    /* 常量 / const */
+    KW_MODIFY,   /* 修改 / modify */
 
     /* 类型 */
     KW_INT, KW_LONG, KW_SHORT, KW_BYTE, KW_UNSIGNED,

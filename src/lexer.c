@@ -21,6 +21,7 @@ static const kw_entry_t g_kws[] = {
     /* 声明 */
     { "is", 2, KW_IS }, { "为", 3, KW_IS },
     { "const", 5, KW_CONST }, { "常量", 6, KW_CONST },
+    { "modify", 6, KW_MODIFY }, { "修改", 6, KW_MODIFY },
 
     /* 类型 */
     { "int", 3, KW_INT }, { "整数", 6, KW_INT },

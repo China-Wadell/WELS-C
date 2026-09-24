@@ -149,6 +149,12 @@ static void print_stmt(stmt_t *s, int d) {
             for (int i = 0; i < s->nstmts; i++) print_stmt(s->stmts[i], d + 1);
             indent(d); puts("}");
             break;
+        case ST_BREAK:
+            indent(d); puts("BREAK");
+            break;
+        case ST_CONTINUE:
+            indent(d); puts("CONTINUE");
+            break;
     }
 }
 

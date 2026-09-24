@@ -521,6 +521,49 @@ static int parse_enum(parser_t *P, program_t *out) {
     return 0;
 }
 
+static int parse_modify(parser_t *P, stmt_t **out) {
+    p_advance(P);
+    if (P->cur.kind != TOK_IDENT) return p_err(P, "期望变量名");
+    const char *name = P->cur.start;
+    int nlen = P->cur.len;
+    p_advance(P);
+
+    /* 可选：常量 关键字 */
+    p_peek(P);
+    if (is_kw(P, KW_CONST)) {
+        p_advance(P);
+        /* 可选：类型 */
+        p_peek(P);
+        if (P->cur.kind == TOK_KEYWORD &&
+            (P->cur.kw_id == KW_INT || P->cur.kw_id == KW_DOUBLE ||
+             P->cur.kw_id == KW_FLOAT || P->cur.kw_id == KW_LONG)) {
+            p_advance(P);
+        }
+        /* 可选：旧值 */
+        p_peek(P);
+        if (P->cur.kind == TOK_NUM_INT || P->cur.kind == TOK_NUM_FLOAT) {
+            p_advance(P);
+        }
+    }
+
+    if (!is_kw(P, KW_IS)) return p_err(P, "期望 '为'");
+    p_advance(P);
+
+    expr_t *val;
+    if (parse_expr(P, &val) < 0) return -1;
+    if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+
+    stmt_t *s = new_stmt(ST_EXPR);
+    expr_t *assign = new_expr(EX_ASSIGN);
+    assign->op_text = "="; assign->op_len = 1;
+    expr_t *lhs = new_expr(EX_IDENT);
+    lhs->name = name; lhs->name_len = nlen;
+    assign->left = lhs; assign->right = val;
+    s->expr = assign;
+    *out = s;
+    return 0;
+}
+
 static int parse_let(parser_t *P, stmt_t **out) {
     stmt_t *s = new_stmt(ST_LET);
     s->line = P->cur.line; s->col = P->cur.col;
@@ -657,7 +700,20 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
     if (is_kw(P, KW_RETURN))                       return parse_return(P, out);
     if (is_kw(P, KW_IF))                           return parse_if(P, out);
     if (is_kw(P, KW_WHILE))                        return parse_while(P, out);
-    if (is_kw(P, KW_FOR))                          return parse_for(P, out); // 这里现在专门处理“循环”或“for”
+    if (is_kw(P, KW_FOR))                          return parse_for(P, out);
+    if (is_kw(P, KW_MODIFY))                       return parse_modify(P, out);
+    if (is_kw(P, KW_BREAK)) {
+        p_advance(P);
+        if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+        *out = new_stmt(ST_BREAK);
+        return 0;
+    }
+    if (is_kw(P, KW_CONTINUE)) {
+        p_advance(P);
+        if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+        *out = new_stmt(ST_CONTINUE);
+        return 0;
+    } // 这里现在专门处理“循环”或“for”
 
     /* 声明：IDENT 后面跟 '为' / 'is' */
     if (P->cur.kind == TOK_IDENT) {
@@ -681,17 +737,34 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
 }
 
 static int parse_block(parser_t *P, stmt_t **out) {
-    if (expect_punct(P, '{', "期望 '{'") < 0) return -1;
     stmt_t *blk = new_stmt(ST_BLOCK);
-    for (;;) {
-        p_peek(P);
-        if (is_punct(P, '}')) break;
-        if (P->cur.kind == TOK_EOF) return p_err(P, "未闭合的 '{'");
-        stmt_t *s = NULL;
-        if (parse_stmt(P, &s) < 0) return -1;
-        if (s) add_stmt(blk, s);
+
+    if (is_punct(P, '{')) {
+        p_advance(P);
+        for (;;) {
+            p_peek(P);
+            if (is_punct(P, '}')) break;
+            if (P->cur.kind == TOK_EOF) return p_err(P, "未闭合的 '{'");
+            stmt_t *s = NULL;
+            if (parse_stmt(P, &s) < 0) return -1;
+            if (s) add_stmt(blk, s);
+        }
+        p_advance(P);
+    } else if (is_kw(P, KW_BEGIN)) {
+        p_advance(P);
+        for (;;) {
+            p_peek(P);
+            if (is_kw(P, KW_END)) break;
+            if (P->cur.kind == TOK_EOF) return p_err(P, "未闭合的 '开始'");
+            stmt_t *s = NULL;
+            if (parse_stmt(P, &s) < 0) return -1;
+            if (s) add_stmt(blk, s);
+        }
+        p_advance(P);
+    } else {
+        return p_err(P, "期望 '{' 或 '开始'");
     }
-    p_advance(P);
+
     *out = blk;
     return 0;
 }

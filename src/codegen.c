@@ -6,6 +6,11 @@ static int   g_str_id = 0;
 static int   g_target_windows = 0;
 static program_t *g_prog = 0;
 
+#define MAX_LOOPS 64
+static int g_break_stack[MAX_LOOPS];
+static int g_cont_stack[MAX_LOOPS];
+static int g_loop_depth = 0;
+
 void codegen_set_target(int is_windows) { g_target_windows = is_windows; }
 
 #define MAX_LOCALS 128
@@ -436,24 +441,41 @@ static void gen_stmt(stmt_t *s) {
             emit(".L%d:\n", L_top);
             gen_expr(s->cond);
             emit("    test %%rax, %%rax\n    jz .L%d\n", L_end);
+            g_break_stack[g_loop_depth] = L_end;
+            g_cont_stack[g_loop_depth]  = L_top;
+            g_loop_depth++;
             gen_stmt(s->body);
+            g_loop_depth--;
             emit("    jmp .L%d\n.L%d:\n", L_top, L_end);
             break;
         }
         case ST_FOR: {
-            int L_top = new_label(), L_end = new_label();
+            int L_top = new_label(), L_step = new_label(), L_end = new_label();
             if (s->for_init) gen_stmt(s->for_init);
             emit(".L%d:\n", L_top);
             if (s->for_cond) {
                 gen_expr(s->for_cond);
                 emit("    test %%rax, %%rax\n    jz .L%d\n", L_end);
             }
+            g_break_stack[g_loop_depth] = L_end;
+            g_cont_stack[g_loop_depth]  = L_step;
+            g_loop_depth++;
             gen_stmt(s->body);
+            g_loop_depth--;
+            emit(".L%d:\n", L_step);
             if (s->for_step) gen_expr(s->for_step);
             emit("    jmp .L%d\n.L%d:\n", L_top, L_end);
             break;
         }
         case ST_BLOCK: for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]); break;
+        case ST_BREAK:
+            if (g_loop_depth > 0)
+                emit("    jmp .L%d\n", g_break_stack[g_loop_depth - 1]);
+            break;
+        case ST_CONTINUE:
+            if (g_loop_depth > 0)
+                emit("    jmp .L%d\n", g_cont_stack[g_loop_depth - 1]);
+            break;
         default: break;
     }
 }
