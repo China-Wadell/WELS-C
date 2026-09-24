@@ -680,6 +680,28 @@ static int parse_typed_let(parser_t *P, stmt_t **out) {
     return 0;
 }
 
+static int parse_asm(parser_t *P, stmt_t **out) {
+    stmt_t *s = new_stmt(ST_ASM);
+    s->line = P->cur.line; s->col = P->cur.col;
+    p_advance(P);
+    if (expect_punct(P, '{', "期望 '{'") < 0) return -1;
+    while (!is_punct(P, '}') && P->cur.kind != TOK_EOF) {
+        if (P->cur.kind != TOK_STRING) return p_err(P, "期望汇编字符串");
+        stmt_t *item = new_stmt(ST_EXPR);
+        expr_t *e = new_expr(EX_STRING);
+        e->name = P->cur.start;
+        e->name_len = P->cur.len;
+        item->expr = e;
+        p_advance(P);
+        add_stmt(s, item);
+        p_peek(P);
+        if (is_punct(P, ';')) p_advance(P);
+    }
+    if (expect_punct(P, '}', "期望 '}'") < 0) return -1;
+    *out = s;
+    return 0;
+}
+
 static int parse_let(parser_t *P, stmt_t **out) {
     stmt_t *s = new_stmt(ST_LET);
     s->line = P->cur.line; s->col = P->cur.col;
@@ -819,6 +841,7 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
     if (is_kw(P, KW_FOR))                          return parse_for(P, out);
     if (is_kw(P, KW_MODIFY))                       return parse_modify(P, out);
     if (is_kw(P, KW_MATCH))                        return parse_match(P, out);
+    if (is_kw(P, KW_ASM))                          return parse_asm(P, out);
     if (is_kw(P, KW_LABEL)) {
         p_advance(P);
         if (P->cur.kind != TOK_IDENT) return p_err(P, "期望标签名");

@@ -173,6 +173,11 @@ static void print_stmt(stmt_t *s, int d) {
         case ST_GOTO:
             indent(d); printf("GOTO(%.*s)\n", s->name_len, s->name);
             break;
+        case ST_ASM:
+            indent(d); puts("ASM {");
+            for (int i = 0; i < s->nstmts; i++) print_stmt(s->stmts[i], d + 1);
+            indent(d); puts("}");
+            break;
         case ST_MATCH:
             indent(d); puts("MATCH");
             print_expr(s->expr, d + 1);

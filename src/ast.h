@@ -31,7 +31,7 @@ typedef struct expr {
 
 typedef enum {
     ST_LET, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK,
-    ST_BREAK, ST_CONTINUE, ST_MATCH, ST_LABEL, ST_GOTO,
+    ST_BREAK, ST_CONTINUE, ST_MATCH, ST_LABEL, ST_GOTO, ST_ASM,
 } stmt_kind_t;
 
 typedef struct stmt {

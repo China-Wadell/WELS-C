@@ -545,6 +545,12 @@ static void gen_stmt(stmt_t *s) {
             free(L_case);
             break;
         }
+        case ST_ASM:
+            for (int i = 0; i < s->nstmts; i++) {
+                expr_t *e = s->stmts[i]->expr;
+                emit("    %.*s\n", e->name_len, e->name);
+            }
+            break;
         case ST_LABEL:
             emit(".Luser_%.*s:\n", s->name_len, s->name);
             break;
