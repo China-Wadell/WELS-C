@@ -163,8 +163,47 @@ static void read_ident(lexer_t *L, token_t *t) {
     }
     t->len = (int)(L->src + L->pos - t->start);
     int kw = kw_lookup(t->start, t->len);
-    if (kw != KW_NONE) { t->kind = TOK_KEYWORD; t->kw_id = kw; }
-    else t->kind = TOK_IDENT;
+    if (kw != KW_NONE) { t->kind = TOK_KEYWORD; t->kw_id = kw; return; }
+
+    int n = t->len;
+    if (n >= 2) {
+        char last = t->start[n-1];
+        char buf[64];
+        int k = n - 1; if (k > 63) k = 63;
+        memcpy(buf, t->start, k); buf[k] = 0;
+
+        if (last == 'H' || last == 'h') {
+            int ok = 1;
+            for (int i = 0; i < n-1; i++)
+                if (!isxdigit((unsigned char)t->start[i])) { ok = 0; break; }
+            if (ok) {
+                t->kind = TOK_NUM_INT;
+                t->ival = strtoll(buf, NULL, 16);
+                return;
+            }
+        }
+        if (last == 'D' || last == 'd') {
+            int ok = 1;
+            for (int i = 0; i < n-1; i++)
+                if (!isdigit((unsigned char)t->start[i])) { ok = 0; break; }
+            if (ok) {
+                t->kind = TOK_NUM_INT;
+                t->ival = strtoll(buf, NULL, 10);
+                return;
+            }
+        }
+        if (last == 'B' || last == 'b') {
+            int ok = 1;
+            for (int i = 0; i < n-1; i++)
+                if (t->start[i] != '0' && t->start[i] != '1') { ok = 0; break; }
+            if (ok) {
+                t->kind = TOK_NUM_INT;
+                t->ival = strtoll(buf, NULL, 2);
+                return;
+            }
+        }
+    }
+    t->kind = TOK_IDENT;
 }
 
 static void read_number(lexer_t *L, token_t *t) {
@@ -180,34 +219,39 @@ static void read_number(lexer_t *L, token_t *t) {
         return;
     }
 
-    while (isdigit(peek(L))) advance(L);
+    /* 扫描字母数字，尝试识别后缀 */
+    int save_pos = L->pos;
+    while (isalnum(peek(L))) advance(L);
+    int alen = L->pos - save_pos;
+    if (alen > 0) {
+        char last = L->src[L->pos - 1];
+        char buf[64];
+        int n = alen - 1; if (n > 63) n = 63;
+        memcpy(buf, t->start, n); buf[n] = 0;
+        if (last == 'H' || last == 'h') {
+            t->ival = strtoll(buf, NULL, 16);
+            t->len = alen; t->kind = TOK_NUM_INT;
+            return;
+        }
+        if (last == 'D' || last == 'd') {
+            t->ival = strtoll(buf, NULL, 10);
+            t->len = alen; t->kind = TOK_NUM_INT;
+            return;
+        }
+        if (last == 'B' || last == 'b') {
+            int ok = 1;
+            for (int i = 0; i < alen - 1; i++)
+                if (t->start[i] != '0' && t->start[i] != '1') { ok = 0; break; }
+            if (ok) {
+                t->ival = strtoll(buf, NULL, 2);
+                t->len = alen; t->kind = TOK_NUM_INT;
+                return;
+            }
+        }
+    }
+    L->pos = save_pos;
 
-    /* 后缀 D / B / H */
-    int c = peek(L);
-    if (c == 'H' || c == 'h') {
-        char save = L->src[L->pos];
-        (void)save;
-        advance(L);
-        t->len = (int)(L->src + L->pos - t->start);
-        t->kind = TOK_NUM_INT;
-        /* 去掉结尾 H */
-        char buf[64];
-        int n = t->len - 1; if (n > 63) n = 63;
-        memcpy(buf, t->start, n); buf[n] = 0;
-        t->ival = strtoll(buf, NULL, 16);
-        return;
-    }
-    if (c == 'B' || c == 'b') {
-        advance(L);
-        t->len = (int)(L->src + L->pos - t->start);
-        t->kind = TOK_NUM_INT;
-        char buf[64];
-        int n = t->len - 1; if (n > 63) n = 63;
-        memcpy(buf, t->start, n); buf[n] = 0;
-        t->ival = strtoll(buf, NULL, 2);
-        return;
-    }
-    if (c == 'D' || c == 'd') { advance(L); t->len = (int)(L->src + L->pos - t->start); }
+    while (isdigit(peek(L))) advance(L);
 
     /* 浮点 */
     int is_float = 0;

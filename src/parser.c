@@ -483,6 +483,44 @@ static int parse_struct(parser_t *P, struct_def_t *sd) {
     return 0;
 }
 
+static int parse_enum(parser_t *P, program_t *out) {
+    p_advance(P);
+    if (P->cur.kind != TOK_IDENT) return p_err(P, "期望枚举名");
+    p_advance(P);
+    if (expect_punct(P, '{', "期望 '{'") < 0) return -1;
+    int64_t next_val = 0;
+    while (!is_punct(P, '}') && P->cur.kind != TOK_EOF) {
+        if (P->cur.kind != TOK_IDENT) return p_err(P, "期望枚举项名");
+        const char *nm = P->cur.start;
+        int nml = P->cur.len;
+        int64_t val = next_val;
+        p_advance(P);
+        p_peek(P);
+        if (is_op(P, "=")) {
+            p_advance(P);
+            if (P->cur.kind != TOK_NUM_INT) return p_err(P, "期望数字");
+            val = P->cur.ival;
+            p_advance(P);
+        }
+        stmt_t *s = new_stmt(ST_LET);
+        s->name = nm; s->name_len = nml;
+        s->type.is_static = 1;
+        s->type.base = "整数"; s->type.base_len = 6;
+        expr_t *e = new_expr(EX_INT);
+        e->ival = val;
+        s->init = e;
+        out->globals = realloc(out->globals, sizeof(stmt_t*) * (out->nglobals + 1));
+        out->globals[out->nglobals++] = s;
+        next_val = val + 1;
+        p_peek(P);
+        if (is_punct(P, ',')) p_advance(P);
+    }
+    if (expect_punct(P, '}', "期望 '}'") < 0) return -1;
+    p_peek(P);
+    if (is_punct(P, ';')) p_advance(P);
+    return 0;
+}
+
 static int parse_let(parser_t *P, stmt_t **out) {
     stmt_t *s = new_stmt(ST_LET);
     s->line = P->cur.line; s->col = P->cur.col;
@@ -493,12 +531,24 @@ static int parse_let(parser_t *P, stmt_t **out) {
     s->name_len = P->cur.len;
     p_advance(P);
 
-    /* 为 / is */
-    if (!is_kw(P, KW_IS)) return p_err(P, "期望 '为' 或 'is'");
-    p_advance(P);
+    /* 为 / is / 常量 */
+    int was_const = 0;
+    if (is_kw(P, KW_IS)) {
+        p_advance(P);
+    } else if (is_kw(P, KW_CONST)) {
+        was_const = 1;
+        p_advance(P);
+    } else {
+        return p_err(P, "期望 '为' 或 'is' 或 '常量'");
+    }
 
-    /* 类型 */
+    /* 类型（parse_type 会 memset，所以 flag 要在它之后再设） */
     if (parse_type(P, &s->type) < 0) return -1;
+
+    if (was_const) {
+        s->type.is_const  = 1;
+        s->type.is_static = 1;
+    }
 
     /* 值（可选） */
     p_peek(P);
@@ -563,7 +613,7 @@ static int parse_for(parser_t *P, stmt_t **out) {
     /* 向后偷看一个 token，判断是声明还是赋值 */
     token_t save = P->cur;
     p_peek(P);
-    int next_is_is = (P->next.kind == TOK_KEYWORD && P->next.kw_id == KW_IS);
+    int next_is_is = (P->next.kind == TOK_KEYWORD && (P->next.kw_id == KW_IS || P->next.kw_id == KW_CONST));
     P->cur = save;
 
     if (next_is_is) {
@@ -613,7 +663,7 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
     if (P->cur.kind == TOK_IDENT) {
         token_t save_cur = P->cur;
         p_peek(P);
-        int next_is_is = (P->next.kind == TOK_KEYWORD && P->next.kw_id == KW_IS);
+        int next_is_is = (P->next.kind == TOK_KEYWORD && (P->next.kw_id == KW_IS || P->next.kw_id == KW_CONST));
         P->cur = save_cur;
         if (next_is_is) {
             return parse_let(P, out);
@@ -723,6 +773,10 @@ int parse_program(lexer_t *L, program_t *out) {
             out->nstructs++;
             continue;
         }
+        if (is_kw(&P, KW_ENUM)) {
+            if (parse_enum(&P, out) < 0) return -1;
+            continue;
+        }
         if (is_kw(&P, KW_FN)) {
             p_advance(&P);
             func_t *f = NULL;
@@ -736,7 +790,7 @@ int parse_program(lexer_t *L, program_t *out) {
         if (P.cur.kind == TOK_IDENT) {
             token_t save = P.cur;
             p_peek(&P);
-            int next_is_is = (P.next.kind == TOK_KEYWORD && P.next.kw_id == KW_IS);
+            int next_is_is = (P.next.kind == TOK_KEYWORD && (P.next.kw_id == KW_IS || P.next.kw_id == KW_CONST));
             P.cur = save;
             if (next_is_is) {
                 stmt_t *s = NULL;
