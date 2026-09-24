@@ -1,0 +1,16 @@
+# 编译产物
+wescc
+wescc.exe
+out.s
+test
+test.exe
+*.o
+
+# 编辑器
+.vscode/
+*.swp
+*~
+
+# 系统
+.DS_Store
+Thumbs.db
