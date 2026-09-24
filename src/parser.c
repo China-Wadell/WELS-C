@@ -209,6 +209,18 @@ static int parse_postfix(parser_t *P, expr_t **out) {
             *out = idx;
             continue;
         }
+        if (is_op(P, ".")) {
+            p_advance(P);
+            if (P->cur.kind != TOK_IDENT) return p_err(P, "期望字段名");
+            expr_t *mem = new_expr(EX_MEMBER);
+            mem->line = (*out)->line; mem->col = (*out)->col;
+            mem->left = *out;
+            mem->name = P->cur.start;
+            mem->name_len = P->cur.len;
+            p_advance(P);
+            *out = mem;
+            continue;
+        }
         break;
     }
     return 0;
@@ -413,6 +425,64 @@ static int parse_expr(parser_t *P, expr_t **out) {
 /* ============ 语句 ============ */
 
 /* 变量名 为 类型 值; */
+static int parse_struct(parser_t *P, struct_def_t *sd) {
+    memset(sd, 0, sizeof(*sd));
+    if (P->cur.kind != TOK_IDENT) return p_err(P, "期望结构名");
+    sd->name = P->cur.start; sd->name_len = P->cur.len;
+    p_advance(P);
+
+    type_desc_t ty;
+    if (parse_type(P, &ty) < 0) return -1;
+
+    if (expect_punct(P, '(', "期望 '('") < 0) return -1;
+    if (!is_punct(P, ')')) {
+        for (;;) {
+            if (P->cur.kind != TOK_IDENT) return p_err(P, "期望字段名");
+            int fi = sd->nfields;
+            sd->fields[fi].name = P->cur.start;
+            sd->fields[fi].name_len = P->cur.len;
+            sd->fields[fi].offset = fi * 8;
+            sd->nfields++;
+            p_advance(P);
+            p_peek(P);
+            if (is_punct(P, ',')) { p_advance(P); continue; }
+            break;
+        }
+    }
+    if (expect_punct(P, ')', "期望 ')'") < 0) return -1;
+
+    if (expect_punct(P, '{', "期望 '{'") < 0) return -1;
+    while (!is_punct(P, '}') && P->cur.kind != TOK_EOF) {
+        if (P->cur.kind != TOK_IDENT) return p_err(P, "期望实例名");
+        int idx = sd->ninstances;
+        sd->inst_name[idx] = P->cur.start;
+        sd->inst_name_len[idx] = P->cur.len;
+        sd->ninstances++;
+        p_advance(P);
+
+        if (expect_punct(P, '(', "期望 '('") < 0) return -1;
+        int fi = 0;
+        while (!is_punct(P, ')') && P->cur.kind != TOK_EOF) {
+            if (P->cur.kind == TOK_NUM_INT) {
+                sd->inst_init[idx][fi++] = P->cur.ival;
+                p_advance(P);
+            } else if (P->cur.kind == TOK_STRING) {
+                sd->inst_init[idx][fi++] = 0;
+                p_advance(P);
+            } else return p_err(P, "期望初值");
+            p_peek(P);
+            if (is_punct(P, ',')) p_advance(P);
+        }
+        if (expect_punct(P, ')', "期望 ')'") < 0) return -1;
+        p_peek(P);
+        if (is_punct(P, ';')) p_advance(P);
+    }
+    if (expect_punct(P, '}', "期望 '}'") < 0) return -1;
+    p_peek(P);
+    if (is_punct(P, ';')) p_advance(P);
+    return 0;
+}
+
 static int parse_let(parser_t *P, stmt_t **out) {
     stmt_t *s = new_stmt(ST_LET);
     s->line = P->cur.line; s->col = P->cur.col;
@@ -646,6 +716,13 @@ int parse_program(lexer_t *L, program_t *out) {
             continue;
         }
 
+        if (is_kw(&P, KW_STRUCT)) {
+            p_advance(&P);
+            out->structs = realloc(out->structs, sizeof(struct_def_t) * (out->nstructs + 1));
+            if (parse_struct(&P, &out->structs[out->nstructs]) < 0) return -1;
+            out->nstructs++;
+            continue;
+        }
         if (is_kw(&P, KW_FN)) {
             p_advance(&P);
             func_t *f = NULL;

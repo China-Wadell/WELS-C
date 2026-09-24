@@ -4,12 +4,10 @@ static FILE *g_out = 0;
 static int   g_label = 0;
 static int   g_str_id = 0;
 static int   g_target_windows = 0;
+static program_t *g_prog = 0;
 
-void codegen_set_target(int is_windows) {
-    g_target_windows = is_windows;
-}
+void codegen_set_target(int is_windows) { g_target_windows = is_windows; }
 
-/* ---------- 局部变量 ---------- */
 #define MAX_LOCALS 128
 typedef struct {
     const char *name; int len; int offset;
@@ -19,13 +17,12 @@ static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
 static int     g_stack_used = 0;
 
-/* ---------- 全局变量 ---------- */
 #define MAX_GLOBALS 256
 typedef struct {
     const char *name; int len;
     int is_array; int arr_len; int is_float;
-    stmt_t *decl;
-    int id;
+    stmt_t *decl; int id;
+    int is_struct_inst; int struct_idx; int inst_idx;
 } global_t;
 static global_t g_globals[MAX_GLOBALS];
 static int      g_nglobals = 0;
@@ -34,47 +31,44 @@ static void emit(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vfprintf(g_out, fmt, ap); va_end(ap);
 }
-
 static int new_label(void) { return g_label++; }
 
 static int local_add_ex(const char *name, int len, int is_array, int arr_len, int is_float) {
     int slots = is_array ? arr_len : 1;
     g_stack_used += 8 * slots;
-    g_locals[g_nlocals].name     = name;
-    g_locals[g_nlocals].len      = len;
-    g_locals[g_nlocals].offset   = -g_stack_used;
+    g_locals[g_nlocals].name = name; g_locals[g_nlocals].len = len;
+    g_locals[g_nlocals].offset = -g_stack_used;
     g_locals[g_nlocals].is_array = is_array;
-    g_locals[g_nlocals].arr_len  = arr_len;
+    g_locals[g_nlocals].arr_len = arr_len;
     g_locals[g_nlocals].is_float = is_float;
     g_nlocals++;
     return -g_stack_used;
 }
-static int local_add(const char *name, int len) {
-    return local_add_ex(name, len, 0, 1, 0);
-}
+static int local_add(const char *name, int len) { return local_add_ex(name, len, 0, 1, 0); }
 
 static int find_local(const char *name, int len) {
     for (int i = g_nlocals - 1; i >= 0; i--)
-        if (g_locals[i].len == len && memcmp(g_locals[i].name, name, len) == 0)
-            return i;
+        if (g_locals[i].len == len && memcmp(g_locals[i].name, name, len) == 0) return i;
     return -1;
 }
-
 static int find_global(const char *name, int len) {
     for (int i = 0; i < g_nglobals; i++)
-        if (g_globals[i].len == len && memcmp(g_globals[i].name, name, len) == 0)
-            return i;
+        if (g_globals[i].len == len && memcmp(g_globals[i].name, name, len) == 0) return i;
+    return -1;
+}
+static int find_struct_field(struct_def_t *sd, const char *name, int len) {
+    for (int i = 0; i < sd->nfields; i++)
+        if (sd->fields[i].name_len == len &&
+            memcmp(sd->fields[i].name, name, len) == 0) return i;
     return -1;
 }
 
 static int is_op_text(const char *t, int len, const char *s) {
     return (int)strlen(s) == len && memcmp(t, s, len) == 0;
 }
-
 static int is_float_type(type_desc_t *t) {
     const char *b = t->base; int l = t->base_len;
-    if (l == 6 && (memcmp(b, "双精", 6) == 0 ||
-                   memcmp(b, "浮点", 6) == 0 ||
+    if (l == 6 && (memcmp(b, "双精", 6) == 0 || memcmp(b, "浮点", 6) == 0 ||
                    memcmp(b, "double", 6) == 0)) return 1;
     if (l == 5 && memcmp(b, "float", 5) == 0) return 1;
     return 0;
@@ -87,7 +81,6 @@ static int str_add(const char *s, int len) {
     emit("0\n    .text\n");
     return id;
 }
-
 static int float_add(double v) {
     int id = g_str_id++;
     emit("    .section .rodata\n.Lfloat%d:\n    .double %.17g\n    .text\n", id, v);
@@ -115,7 +108,6 @@ static int expr_is_float(expr_t *e) {
     }
 }
 
-/* 生成“取变量值”的汇编 */
 static void gen_load_var(const char *name, int len) {
     int li = find_local(name, len);
     if (li >= 0) {
@@ -135,7 +127,6 @@ static void gen_load_var(const char *name, int len) {
     exit(1);
 }
 
-/* 收集全局变量声明（递归） */
 static void collect_globals(stmt_t *s) {
     if (!s) return;
     if (s->kind == ST_LET && s->type.is_static) {
@@ -149,48 +140,64 @@ static void collect_globals(stmt_t *s) {
         g_globals[g_nglobals].is_array = is_arr;
         g_globals[g_nglobals].arr_len = n;
         g_globals[g_nglobals].id = g_nglobals;
+        g_globals[g_nglobals].is_struct_inst = 0;
         g_nglobals++;
     }
     switch (s->kind) {
-        case ST_BLOCK:
-            for (int i = 0; i < s->nstmts; i++) collect_globals(s->stmts[i]);
-            break;
-        case ST_IF:
-            collect_globals(s->then_s);
-            collect_globals(s->else_s);
-            break;
-        case ST_WHILE:
-        case ST_FOR:
-            collect_globals(s->body);
-            break;
+        case ST_BLOCK: for (int i = 0; i < s->nstmts; i++) collect_globals(s->stmts[i]); break;
+        case ST_IF: collect_globals(s->then_s); collect_globals(s->else_s); break;
+        case ST_WHILE: case ST_FOR: collect_globals(s->body); break;
         default: break;
     }
 }
 
-/* 输出 .data 段（只能常量初始化） */
+static void collect_struct_insts(void) {
+    if (!g_prog) return;
+    for (int si = 0; si < g_prog->nstructs; si++) {
+        struct_def_t *sd = &g_prog->structs[si];
+        for (int ii = 0; ii < sd->ninstances; ii++) {
+            if (g_nglobals >= MAX_GLOBALS) return;
+            g_globals[g_nglobals].name = sd->inst_name[ii];
+            g_globals[g_nglobals].len = sd->inst_name_len[ii];
+            g_globals[g_nglobals].decl = 0;
+            g_globals[g_nglobals].is_float = 0;
+            g_globals[g_nglobals].is_array = 0;
+            g_globals[g_nglobals].arr_len = 0;
+            g_globals[g_nglobals].id = g_nglobals;
+            g_globals[g_nglobals].is_struct_inst = 1;
+            g_globals[g_nglobals].struct_idx = si;
+            g_globals[g_nglobals].inst_idx = ii;
+            g_nglobals++;
+        }
+    }
+}
+
 static void emit_globals(void) {
     if (g_nglobals == 0) return;
     emit("    .data\n");
     for (int i = 0; i < g_nglobals; i++) {
         global_t *g = &g_globals[i];
-        emit("    .align 8\n");
-        emit("g%d:\n", g->id);
-        stmt_t *d = g->decl;
-        if (g->is_array) {
-            for (int k = 0; k < g->arr_len; k++) {
-                expr_t *el = d->init->args[k];
-                if (el->kind == EX_INT)        emit("    .quad %lld\n", (long long)el->ival);
-                else if (el->kind == EX_FLOAT) emit("    .double %.17g\n", el->fval);
-                else                           emit("    .quad 0\n");
-            }
-        } else if (g->is_float) {
-            double v = 0.0;
-            if (d->init && d->init->kind == EX_FLOAT) v = d->init->fval;
-            emit("    .double %.17g\n", v);
+        emit("    .align 8\ng%d:\n", g->id);
+        if (g->is_struct_inst) {
+            struct_def_t *sd = &g_prog->structs[g->struct_idx];
+            for (int k = 0; k < sd->nfields; k++)
+                emit("    .quad %lld\n", (long long)sd->inst_init[g->inst_idx][k]);
         } else {
-            long long v = 0;
-            if (d->init && d->init->kind == EX_INT) v = (long long)d->init->ival;
-            emit("    .quad %lld\n", v);
+            stmt_t *d = g->decl;
+            if (g->is_array) {
+                for (int k = 0; k < g->arr_len; k++) {
+                    expr_t *el = d->init->args[k];
+                    if (el->kind == EX_INT) emit("    .quad %lld\n", (long long)el->ival);
+                    else if (el->kind == EX_FLOAT) emit("    .double %.17g\n", el->fval);
+                    else emit("    .quad 0\n");
+                }
+            } else if (g->is_float) {
+                double v = (d->init && d->init->kind == EX_FLOAT) ? d->init->fval : 0.0;
+                emit("    .double %.17g\n", v);
+            } else {
+                long long v = (d->init && d->init->kind == EX_INT) ? (long long)d->init->ival : 0;
+                emit("    .quad %lld\n", v);
+            }
         }
     }
     emit("    .text\n");
@@ -200,37 +207,24 @@ static void gen_call(expr_t *e) {
     int n = e->nargs;
     const char *fn = e->operand->name;
     int fnlen = e->operand->name_len;
-
-    int is_print =
-        (fnlen == 6 && memcmp(fn, "打印", 6) == 0) ||
-        (fnlen == 5 && memcmp(fn, "print", 5) == 0);
-
+    int is_print = (fnlen == 6 && memcmp(fn, "打印", 6) == 0) ||
+                   (fnlen == 5 && memcmp(fn, "print", 5) == 0);
     if (is_print) {
         for (int i = 0; i < n; i++) {
             int is_f = expr_is_float(e->args[i]);
-            gen_expr(e->args[i]);
             int is_str = (e->args[i]->kind == EX_STRING);
+            gen_expr(e->args[i]);
             if (is_f) {
                 if (g_target_windows) emit("    lea .Lfmt_f(%%rip), %%rcx\n");
                 else                  emit("    lea .Lfmt_f(%%rip), %%rdi\n");
                 emit("    movl $1, %%eax\n");
             } else if (is_str) {
-                if (g_target_windows) {
-                    emit("    mov %%rax, %%rdx\n");
-                    emit("    lea .Lfmt_s(%%rip), %%rcx\n");
-                } else {
-                    emit("    mov %%rax, %%rsi\n");
-                    emit("    lea .Lfmt_s(%%rip), %%rdi\n");
-                }
+                if (g_target_windows) { emit("    mov %%rax, %%rdx\n    lea .Lfmt_s(%%rip), %%rcx\n"); }
+                else                  { emit("    mov %%rax, %%rsi\n    lea .Lfmt_s(%%rip), %%rdi\n"); }
                 emit("    movl $0, %%eax\n");
             } else {
-                if (g_target_windows) {
-                    emit("    mov %%rax, %%rdx\n");
-                    emit("    lea .Lfmt_d(%%rip), %%rcx\n");
-                } else {
-                    emit("    mov %%rax, %%rsi\n");
-                    emit("    lea .Lfmt_d(%%rip), %%rdi\n");
-                }
+                if (g_target_windows) { emit("    mov %%rax, %%rdx\n    lea .Lfmt_d(%%rip), %%rcx\n"); }
+                else                  { emit("    mov %%rax, %%rsi\n    lea .Lfmt_d(%%rip), %%rdi\n"); }
                 emit("    movl $0, %%eax\n");
             }
             emit("    call printf\n");
@@ -238,32 +232,38 @@ static void gen_call(expr_t *e) {
         emit("    movq $0, %%rax\n");
         return;
     }
-
     static const char *regs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     static const char *regs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
     const char **regs = g_target_windows ? regs_windows : regs_linux;
-
-    for (int i = n - 1; i >= 0; i--) {
-        gen_expr(e->args[i]);
-        emit("    push %%rax\n");
-    }
-    for (int i = 0; i < n && i < 6; i++)
-        emit("    pop %s\n", regs[i]);
-
-    emit("    movl $0, %%eax\n");
-    emit("    call %.*s\n", fnlen, fn);
+    for (int i = n - 1; i >= 0; i--) { gen_expr(e->args[i]); emit("    push %%rax\n"); }
+    for (int i = 0; i < n && i < 6; i++) emit("    pop %s\n", regs[i]);
+    emit("    movl $0, %%eax\n    call %.*s\n", fnlen, fn);
 }
 
 static void gen_expr(expr_t *e) {
     if (!e) return;
     switch (e->kind) {
-        case EX_INT:    emit("    movq $%lld, %%rax\n", (long long)e->ival); break;
+        case EX_INT: emit("    movq $%lld, %%rax\n", (long long)e->ival); break;
         case EX_FLOAT: { int id = float_add(e->fval); emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id); break; }
         case EX_STRING: { int id = str_add(e->name, e->name_len); emit("    lea .Lstr%d(%%rip), %%rax\n", id); break; }
-        case EX_IDENT:  gen_load_var(e->name, e->name_len); break;
+        case EX_IDENT: gen_load_var(e->name, e->name_len); break;
+        case EX_MEMBER: {
+            /* 左必须是 IDENT（实例名） */
+            if (e->left->kind != EX_IDENT) { fprintf(stderr, "错误: . 左边须是实例名\n"); exit(1); }
+            int gi = find_global(e->left->name, e->left->name_len);
+            if (gi < 0 || !g_globals[gi].is_struct_inst) {
+                fprintf(stderr, "错误: 未声明的实例 %.*s\n", e->left->name_len, e->left->name);
+                exit(1);
+            }
+            struct_def_t *sd = &g_prog->structs[g_globals[gi].struct_idx];
+            int fi = find_struct_field(sd, e->name, e->name_len);
+            if (fi < 0) { fprintf(stderr, "错误: 结构无字段 %.*s\n", e->name_len, e->name); exit(1); }
+            emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
+            emit("    mov %d(%%rax), %%rax\n", sd->fields[fi].offset);
+            break;
+        }
         case EX_UNARY:
-            if (is_op_text(e->op_text, e->op_len, "&") &&
-                e->operand->kind == EX_IDENT) {
+            if (is_op_text(e->op_text, e->op_len, "&") && e->operand->kind == EX_IDENT) {
                 int li = find_local(e->operand->name, e->operand->name_len);
                 if (li >= 0) { emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset); break; }
                 int gi = find_global(e->operand->name, e->operand->name_len);
@@ -273,15 +273,11 @@ static void gen_expr(expr_t *e) {
             gen_expr(e->operand);
             if (expr_is_float(e)) {
                 if (is_op_text(e->op_text, e->op_len, "-")) {
-                    emit("    xorpd %%xmm1, %%xmm1\n");
-                    emit("    subsd %%xmm0, %%xmm1\n");
-                    emit("    movapd %%xmm1, %%xmm0\n");
+                    emit("    xorpd %%xmm1, %%xmm1\n    subsd %%xmm0, %%xmm1\n    movapd %%xmm1, %%xmm0\n");
                 }
             } else {
                 if      (is_op_text(e->op_text, e->op_len, "-")) emit("    neg %%rax\n");
-                else if (is_op_text(e->op_text, e->op_len, "!")) {
-                    emit("    test %%rax, %%rax\n    setz %%al\n    movzbq %%al, %%rax\n");
-                }
+                else if (is_op_text(e->op_text, e->op_len, "!")) emit("    test %%rax, %%rax\n    setz %%al\n    movzbq %%al, %%rax\n");
                 else if (is_op_text(e->op_text, e->op_len, "~")) emit("    not %%rax\n");
                 else if (is_op_text(e->op_text, e->op_len, "*")) emit("    mov (%%rax), %%rax\n");
             }
@@ -311,14 +307,10 @@ static void gen_expr(expr_t *e) {
             emit("    mov (%%rax, %%rcx, 8), %%rax\n");
             break;
         case EX_ASSIGN: {
-            int li = -1, gi = -1;
             if (e->left->kind == EX_IDENT) {
-                li = find_local(e->left->name, e->left->name_len);
-                if (li < 0) gi = find_global(e->left->name, e->left->name_len);
-                if (li < 0 && gi < 0) {
-                    fprintf(stderr, "错误: 未声明的变量 %.*s\n", e->left->name_len, e->left->name);
-                    exit(1);
-                }
+                int li = find_local(e->left->name, e->left->name_len);
+                int gi = (li < 0) ? find_global(e->left->name, e->left->name_len) : -1;
+                if (li < 0 && gi < 0) { fprintf(stderr, "错误: 未声明的变量\n"); exit(1); }
                 gen_expr(e->right);
                 if (li >= 0) {
                     if (g_locals[li].is_float) emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
@@ -328,6 +320,16 @@ static void gen_expr(expr_t *e) {
                     else                        emit("    movq %%rax, g%d(%%rip)\n", g_globals[gi].id);
                 }
             }
+            else if (e->left->kind == EX_MEMBER) {
+                if (e->left->left->kind != EX_IDENT) { fprintf(stderr, "错误\n"); exit(1); }
+                int gi = find_global(e->left->left->name, e->left->left->name_len);
+                struct_def_t *sd = &g_prog->structs[g_globals[gi].struct_idx];
+                int fi = find_struct_field(sd, e->left->name, e->left->name_len);
+                gen_expr(e->right);
+                emit("    mov %%rax, %%rcx\n");
+                emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
+                emit("    mov %%rcx, %d(%%rax)\n", sd->fields[fi].offset);
+            }
             else if (e->left->kind == EX_UNARY &&
                      is_op_text(e->left->op_text, e->left->op_len, "*") &&
                      e->left->operand->kind == EX_IDENT) {
@@ -335,9 +337,6 @@ static void gen_expr(expr_t *e) {
                 int off = -1;
                 int li2 = find_local(e->left->operand->name, e->left->operand->name_len);
                 if (li2 >= 0) off = g_locals[li2].offset;
-                else { int gi2 = find_global(e->left->operand->name, e->left->operand->name_len);
-                       if (gi2 >= 0) { emit("    lea g%d(%%rip), %%rcx\n", g_globals[gi2].id);
-                                       emit("    movq (%%rcx), %%rcx\n"); off = -2; } }
                 if (off >= 0) emit("    movq %d(%%rbp), %%rcx\n", off);
                 emit("    movq %%rax, (%%rcx)\n");
             }
@@ -347,8 +346,7 @@ static void gen_expr(expr_t *e) {
                 gen_expr(e->left->right);
                 emit("    push %%rax\n");
                 gen_expr(e->right);
-                emit("    pop %%rcx\n    pop %%rdx\n");
-                emit("    movq %%rax, (%%rdx, %%rcx, 8)\n");
+                emit("    pop %%rcx\n    pop %%rdx\n    movq %%rax, (%%rdx, %%rcx, 8)\n");
             }
             break;
         }
@@ -358,17 +356,17 @@ static void gen_expr(expr_t *e) {
 }
 
 static void gen_binop(const char *op, int len) {
-    if      (is_op_text(op, len, "+"))  emit("    add %%rcx, %%rax\n");
-    else if (is_op_text(op, len, "-"))  emit("    sub %%rcx, %%rax\n");
-    else if (is_op_text(op, len, "*"))  emit("    imul %%rcx, %%rax\n");
-    else if (is_op_text(op, len, "/")) { emit("    cqto\n    idiv %%rcx\n"); }
-    else if (is_op_text(op, len, "%")) { emit("    cqto\n    idiv %%rcx\n    mov %%rdx, %%rax\n"); }
-    else if (is_op_text(op, len, "==")) { emit("    cmp %%rcx, %%rax\n    sete %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, "\\=")) { emit("    cmp %%rcx, %%rax\n    setne %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, "<"))  { emit("    cmp %%rcx, %%rax\n    setl %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, ">"))  { emit("    cmp %%rcx, %%rax\n    setg %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, "<=")) { emit("    cmp %%rcx, %%rax\n    setle %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, ">=")) { emit("    cmp %%rcx, %%rax\n    setge %%al\n    movzbq %%al, %%rax\n"); }
+    if      (is_op_text(op, len, "+")) emit("    add %%rcx, %%rax\n");
+    else if (is_op_text(op, len, "-")) emit("    sub %%rcx, %%rax\n");
+    else if (is_op_text(op, len, "*")) emit("    imul %%rcx, %%rax\n");
+    else if (is_op_text(op, len, "/")) emit("    cqto\n    idiv %%rcx\n");
+    else if (is_op_text(op, len, "%")) emit("    cqto\n    idiv %%rcx\n    mov %%rdx, %%rax\n");
+    else if (is_op_text(op, len, "==")) emit("    cmp %%rcx, %%rax\n    sete %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, "\\=")) emit("    cmp %%rcx, %%rax\n    setne %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, "<"))  emit("    cmp %%rcx, %%rax\n    setl %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, ">"))  emit("    cmp %%rcx, %%rax\n    setg %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, "<=")) emit("    cmp %%rcx, %%rax\n    setle %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, ">=")) emit("    cmp %%rcx, %%rax\n    setge %%al\n    movzbq %%al, %%rax\n");
     else if (is_op_text(op, len, "&"))  emit("    and %%rcx, %%rax\n");
     else if (is_op_text(op, len, "|"))  emit("    or  %%rcx, %%rax\n");
     else if (is_op_text(op, len, "^"))  emit("    xor %%rcx, %%rax\n");
@@ -383,19 +381,19 @@ static void gen_binop_float(const char *op, int len) {
     else if (is_op_text(op, len, "-")) emit("    subsd %%xmm1, %%xmm0\n");
     else if (is_op_text(op, len, "*")) emit("    mulsd %%xmm1, %%xmm0\n");
     else if (is_op_text(op, len, "/")) emit("    divsd %%xmm1, %%xmm0\n");
-    else if (is_op_text(op, len, "==")) { emit("    comisd %%xmm1, %%xmm0\n    sete %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, "\\=")) { emit("    comisd %%xmm1, %%xmm0\n    setne %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, "<"))  { emit("    comisd %%xmm1, %%xmm0\n    setb %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, ">"))  { emit("    comisd %%xmm1, %%xmm0\n    seta %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, "<=")) { emit("    comisd %%xmm1, %%xmm0\n    setbe %%al\n    movzbq %%al, %%rax\n"); }
-    else if (is_op_text(op, len, ">=")) { emit("    comisd %%xmm1, %%xmm0\n    setae %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, "==")) emit("    comisd %%xmm1, %%xmm0\n    sete %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, "\\=")) emit("    comisd %%xmm1, %%xmm0\n    setne %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, "<"))  emit("    comisd %%xmm1, %%xmm0\n    setb %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, ">"))  emit("    comisd %%xmm1, %%xmm0\n    seta %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, "<=")) emit("    comisd %%xmm1, %%xmm0\n    setbe %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, ">=")) emit("    comisd %%xmm1, %%xmm0\n    setae %%al\n    movzbq %%al, %%rax\n");
 }
 
 static void gen_stmt(stmt_t *s) {
     if (!s) return;
     switch (s->kind) {
         case ST_LET: {
-            if (s->type.is_static) break;  /* 全局，已在 .data 里 */
+            if (s->type.is_static) break;
             int is_f = is_float_type(&s->type);
             if (s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT) {
                 int n = s->init->nargs;
@@ -417,7 +415,7 @@ static void gen_stmt(stmt_t *s) {
             }
             break;
         }
-        case ST_EXPR:   gen_expr(s->expr); break;
+        case ST_EXPR: gen_expr(s->expr); break;
         case ST_RETURN:
             if (s->expr) gen_expr(s->expr);
             else emit("    movq $0, %%rax\n");
@@ -455,9 +453,7 @@ static void gen_stmt(stmt_t *s) {
             emit("    jmp .L%d\n.L%d:\n", L_top, L_end);
             break;
         }
-        case ST_BLOCK:
-            for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]);
-            break;
+        case ST_BLOCK: for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]); break;
         default: break;
     }
 }
@@ -466,36 +462,28 @@ static void gen_func(func_t *f) {
     g_nlocals = 0; g_stack_used = 0;
     const char *name = f->name;
     int nlen = f->name_len;
-
     emit("    .globl main\n");
     if ((nlen == 3 && memcmp(name, "主", 3) == 0) ||
-        (nlen == 4 && memcmp(name, "main", 4) == 0)) {
-        emit("main:\n");
-    } else {
-        emit("%.*s:\n", nlen, name);
-    }
-
+        (nlen == 4 && memcmp(name, "main", 4) == 0)) emit("main:\n");
+    else emit("%.*s:\n", nlen, name);
     emit("    push %%rbp\n    mov %%rsp, %%rbp\n    sub $1024, %%rsp\n");
-
     static const char *pregs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     static const char *pregs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
     const char **pregs = g_target_windows ? pregs_windows : pregs_linux;
-
     for (int i = 0; i < f->nparams && i < 6; i++) {
         int off = local_add(f->params[i].name, f->params[i].name_len);
         emit("    movq %s, %d(%%rbp)\n", pregs[i], off);
     }
-
     gen_stmt(f->body);
     emit("    movq $0, %%rax\n    leave\n    ret\n");
 }
 
 int codegen_program(program_t *p, const char *out_path) {
+    g_prog = p;
     g_nglobals = 0;
-    for (int i = 0; i < p->nglobals; i++)
-        collect_globals(p->globals[i]);
-    for (int i = 0; i < p->nfuncs; i++)
-        collect_globals(p->funcs[i]->body);
+    for (int i = 0; i < p->nglobals; i++) collect_globals(p->globals[i]);
+    for (int i = 0; i < p->nfuncs; i++) collect_globals(p->funcs[i]->body);
+    collect_struct_insts();
 
     g_out = fopen(out_path, "w");
     if (!g_out) { perror(out_path); return -1; }
@@ -506,11 +494,8 @@ int codegen_program(program_t *p, const char *out_path) {
     emit(".Lfmt_d:\n    .asciz \"%%ld\"\n");
     emit(".Lfmt_f:\n    .asciz \"%%f\"\n");
     emit("    .text\n");
-
     emit_globals();
-
     for (int i = 0; i < p->nfuncs; i++) gen_func(p->funcs[i]);
-
     emit("    .section .note.GNU-stack,\"\",@progbits\n\n");
     fclose(g_out); g_out = 0;
     return 0;

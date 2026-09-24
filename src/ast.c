@@ -81,6 +81,10 @@ static void print_expr(expr_t *e, int d) {
             print_expr(e->left, d + 1);
             print_expr(e->right, d + 1);
             break;
+        case EX_MEMBER:
+            printf("MEMBER(%.*s)\n", e->name_len, e->name);
+            print_expr(e->left, d + 1);
+            break;
     }
 }
 
