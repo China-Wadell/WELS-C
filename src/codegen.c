@@ -16,6 +16,7 @@ typedef struct {
     int         offset;
     int         is_array;
     int         arr_len;
+    int         is_float;
 } local_t;
 
 static local_t g_locals[MAX_LOCALS];
@@ -31,7 +32,7 @@ static void emit(const char *fmt, ...) {
 
 static int new_label(void) { return g_label++; }
 
-static int local_add_ex(const char *name, int len, int is_array, int arr_len) {
+static int local_add_ex(const char *name, int len, int is_array, int arr_len, int is_float) {
     int slots = is_array ? arr_len : 1;
     g_stack_used += 8 * slots;
     g_locals[g_nlocals].name     = name;
@@ -39,12 +40,13 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len) {
     g_locals[g_nlocals].offset   = -g_stack_used;
     g_locals[g_nlocals].is_array = is_array;
     g_locals[g_nlocals].arr_len  = arr_len;
+    g_locals[g_nlocals].is_float = is_float;
     g_nlocals++;
     return -g_stack_used;
 }
 
 static int local_add(const char *name, int len) {
-    return local_add_ex(name, len, 0, 1);
+    return local_add_ex(name, len, 0, 1, 0);
 }
 
 static int local_find_idx(const char *name, int len) {
@@ -63,6 +65,16 @@ static int is_op_text(const char *t, int len, const char *s) {
     return (int)strlen(s) == len && memcmp(t, s, len) == 0;
 }
 
+static int is_float_type(type_desc_t *t) {
+    const char *b = t->base;
+    int l = t->base_len;
+    if (l == 6 && (memcmp(b, "双精", 6) == 0 ||
+                   memcmp(b, "浮点", 6) == 0 ||
+                   memcmp(b, "double", 6) == 0)) return 1;
+    if (l == 5 && memcmp(b, "float", 5) == 0) return 1;
+    return 0;
+}
+
 static int str_add(const char *s, int len) {
     int id = g_str_id++;
     emit("    .section .rodata\n");
@@ -74,8 +86,35 @@ static int str_add(const char *s, int len) {
     return id;
 }
 
+static int float_add(double v) {
+    int id = g_str_id++;
+    emit("    .section .rodata\n");
+    emit(".Lfloat%d:\n", id);
+    emit("    .double %.17g\n", v);
+    emit("    .text\n");
+    return id;
+}
+
 static void gen_binop(const char *op, int len);
+static void gen_binop_float(const char *op, int len);
 static void gen_expr(expr_t *e);
+
+static int expr_is_float(expr_t *e) {
+    if (!e) return 0;
+    switch (e->kind) {
+        case EX_FLOAT: return 1;
+        case EX_IDENT: {
+            int i = local_find_idx(e->name, e->name_len);
+            return g_locals[i].is_float;
+        }
+        case EX_BINARY:
+            return expr_is_float(e->left) || expr_is_float(e->right);
+        case EX_UNARY:
+            return expr_is_float(e->operand);
+        default:
+            return 0;
+    }
+}
 
 static void gen_call(expr_t *e) {
     int n = e->nargs;
@@ -87,19 +126,26 @@ static void gen_call(expr_t *e) {
         (fnlen == 5 && memcmp(fn, "print", 5) == 0);
 
     if (is_print) {
-        for (int i = n - 1; i >= 0; i--) {
-            gen_expr(e->args[i]);
-            emit("    push %%rax\n");
-        }
         for (int i = 0; i < n; i++) {
-            if (g_target_windows) {
-                emit("    pop %%rdx\n");
-                emit("    lea .Lfmt_s(%%rip), %%rcx\n");
+            int is_f = expr_is_float(e->args[i]);
+            gen_expr(e->args[i]);
+            if (is_f) {
+                if (g_target_windows) {
+                    emit("    lea .Lfmt_f(%%rip), %%rcx\n");
+                } else {
+                    emit("    lea .Lfmt_f(%%rip), %%rdi\n");
+                }
+                emit("    movl $1, %%eax\n");
             } else {
-                emit("    pop %%rsi\n");
-                emit("    lea .Lfmt_s(%%rip), %%rdi\n");
+                if (g_target_windows) {
+                    emit("    mov %%rax, %%rdx\n");
+                    emit("    lea .Lfmt_s(%%rip), %%rcx\n");
+                } else {
+                    emit("    mov %%rax, %%rsi\n");
+                    emit("    lea .Lfmt_s(%%rip), %%rdi\n");
+                }
+                emit("    movl $0, %%eax\n");
             }
-            emit("    movl $0, %%eax\n");
             emit("    call printf\n");
         }
         emit("    movq $0, %%rax\n");
@@ -127,9 +173,11 @@ static void gen_expr(expr_t *e) {
         case EX_INT:
             emit("    movq $%lld, %%rax\n", (long long)e->ival);
             break;
-        case EX_FLOAT:
-            emit("    movq $0, %%rax\n");
+        case EX_FLOAT: {
+            int id = float_add(e->fval);
+            emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id);
             break;
+        }
         case EX_STRING: {
             int id = str_add(e->name, e->name_len);
             emit("    lea .Lstr%d(%%rip), %%rax\n", id);
@@ -139,6 +187,8 @@ static void gen_expr(expr_t *e) {
             int i = local_find_idx(e->name, e->name_len);
             if (g_locals[i].is_array) {
                 emit("    lea %d(%%rbp), %%rax\n", g_locals[i].offset);
+            } else if (g_locals[i].is_float) {
+                emit("    movsd %d(%%rbp), %%xmm0\n", g_locals[i].offset);
             } else {
                 emit("    movq %d(%%rbp), %%rax\n", g_locals[i].offset);
             }
@@ -152,24 +202,44 @@ static void gen_expr(expr_t *e) {
                 break;
             }
             gen_expr(e->operand);
-            if      (is_op_text(e->op_text, e->op_len, "-")) emit("    neg %%rax\n");
-            else if (is_op_text(e->op_text, e->op_len, "!")) {
-                emit("    test %%rax, %%rax\n");
-                emit("    setz %%al\n");
-                emit("    movzbq %%al, %%rax\n");
-            }
-            else if (is_op_text(e->op_text, e->op_len, "~")) emit("    not %%rax\n");
-            else if (is_op_text(e->op_text, e->op_len, "*")) {
-                emit("    mov (%%rax), %%rax\n");
+            if (expr_is_float(e)) {
+                if (is_op_text(e->op_text, e->op_len, "-")) {
+                    emit("    xorpd %%xmm1, %%xmm1\n");
+                    emit("    subsd %%xmm0, %%xmm1\n");
+                    emit("    movapd %%xmm1, %%xmm0\n");
+                }
+            } else {
+                if      (is_op_text(e->op_text, e->op_len, "-")) emit("    neg %%rax\n");
+                else if (is_op_text(e->op_text, e->op_len, "!")) {
+                    emit("    test %%rax, %%rax\n");
+                    emit("    setz %%al\n");
+                    emit("    movzbq %%al, %%rax\n");
+                }
+                else if (is_op_text(e->op_text, e->op_len, "~")) emit("    not %%rax\n");
+                else if (is_op_text(e->op_text, e->op_len, "*")) {
+                    emit("    mov (%%rax), %%rax\n");
+                }
             }
             break;
-        case EX_BINARY:
-            gen_expr(e->right);
-            emit("    push %%rax\n");
-            gen_expr(e->left);
-            emit("    pop %%rcx\n");
-            gen_binop(e->op_text, e->op_len);
+        case EX_BINARY: {
+            int is_f = expr_is_float(e->left) || expr_is_float(e->right);
+            if (is_f) {
+                gen_expr(e->right);
+                emit("    sub $8, %%rsp\n");
+                emit("    movsd %%xmm0, (%%rsp)\n");
+                gen_expr(e->left);
+                emit("    movsd (%%rsp), %%xmm1\n");
+                emit("    add $8, %%rsp\n");
+                gen_binop_float(e->op_text, e->op_len);
+            } else {
+                gen_expr(e->right);
+                emit("    push %%rax\n");
+                gen_expr(e->left);
+                emit("    pop %%rcx\n");
+                gen_binop(e->op_text, e->op_len);
+            }
             break;
+        }
         case EX_INDEX:
             gen_expr(e->left);
             emit("    push %%rax\n");
@@ -180,9 +250,13 @@ static void gen_expr(expr_t *e) {
             break;
         case EX_ASSIGN:
             if (e->left->kind == EX_IDENT) {
+                int i = local_find_idx(e->left->name, e->left->name_len);
                 gen_expr(e->right);
-                int off = local_find(e->left->name, e->left->name_len);
-                emit("    movq %%rax, %d(%%rbp)\n", off);
+                if (g_locals[i].is_float) {
+                    emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[i].offset);
+                } else {
+                    emit("    movq %%rax, %d(%%rbp)\n", g_locals[i].offset);
+                }
             }
             else if (e->left->kind == EX_UNARY &&
                      is_op_text(e->left->op_text, e->left->op_len, "*") &&
@@ -252,17 +326,54 @@ static void gen_binop(const char *op, int len) {
     else if (is_op_text(op, len, "||")) emit("    or  %%rcx, %%rax\n");
 }
 
+static void gen_binop_float(const char *op, int len) {
+    if      (is_op_text(op, len, "+")) emit("    addsd %%xmm1, %%xmm0\n");
+    else if (is_op_text(op, len, "-")) emit("    subsd %%xmm1, %%xmm0\n");
+    else if (is_op_text(op, len, "*")) emit("    mulsd %%xmm1, %%xmm0\n");
+    else if (is_op_text(op, len, "/")) emit("    divsd %%xmm1, %%xmm0\n");
+    else if (is_op_text(op, len, "==")) {
+        emit("    comisd %%xmm1, %%xmm0\n");
+        emit("    sete %%al\n"); emit("    movzbq %%al, %%rax\n");
+    }
+    else if (is_op_text(op, len, "\\=")) {
+        emit("    comisd %%xmm1, %%xmm0\n");
+        emit("    setne %%al\n"); emit("    movzbq %%al, %%rax\n");
+    }
+    else if (is_op_text(op, len, "<")) {
+        emit("    comisd %%xmm1, %%xmm0\n");
+        emit("    setb %%al\n"); emit("    movzbq %%al, %%rax\n");
+    }
+    else if (is_op_text(op, len, ">")) {
+        emit("    comisd %%xmm1, %%xmm0\n");
+        emit("    seta %%al\n"); emit("    movzbq %%al, %%rax\n");
+    }
+    else if (is_op_text(op, len, "<=")) {
+        emit("    comisd %%xmm1, %%xmm0\n");
+        emit("    setbe %%al\n"); emit("    movzbq %%al, %%rax\n");
+    }
+    else if (is_op_text(op, len, ">=")) {
+        emit("    comisd %%xmm1, %%xmm0\n");
+        emit("    setae %%al\n"); emit("    movzbq %%al, %%rax\n");
+    }
+}
+
 static void gen_stmt(stmt_t *s) {
     if (!s) return;
     switch (s->kind) {
         case ST_LET: {
+            int is_f = is_float_type(&s->type);
             if (s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT) {
                 int n = s->init->nargs;
-                int base = local_add_ex(s->name, s->name_len, 1, n);
+                int base = local_add_ex(s->name, s->name_len, 1, n, 0);
                 for (int i = 0; i < n; i++) {
                     gen_expr(s->init->args[i]);
                     emit("    movq %%rax, %d(%%rbp)\n", base + i * 8);
                 }
+            } else if (is_f) {
+                if (s->init) gen_expr(s->init);
+                else emit("    pxor %%xmm0, %%xmm0\n");
+                int off = local_add_ex(s->name, s->name_len, 0, 1, 1);
+                emit("    movsd %%xmm0, %d(%%rbp)\n", off);
             } else {
                 if (s->init) gen_expr(s->init);
                 else emit("    movq $0, %%rax\n");
@@ -372,6 +483,8 @@ int codegen_program(program_t *p, const char *out_path) {
     emit("    .section .rodata\n");
     emit(".Lfmt_s:\n");
     emit("    .asciz \"%%s\"\n");
+    emit(".Lfmt_f:\n");
+    emit("    .asciz \"%%f\"\n");
     emit("    .text\n");
 
     for (int i = 0; i < p->nfuncs; i++) gen_func(p->funcs[i]);
