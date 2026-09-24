@@ -9,25 +9,30 @@ void codegen_set_target(int is_windows) {
     g_target_windows = is_windows;
 }
 
+/* ---------- 局部变量 ---------- */
 #define MAX_LOCALS 128
 typedef struct {
-    const char *name;
-    int         len;
-    int         offset;
-    int         is_array;
-    int         arr_len;
-    int         is_float;
+    const char *name; int len; int offset;
+    int is_array; int arr_len; int is_float;
 } local_t;
-
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
 static int     g_stack_used = 0;
 
+/* ---------- 全局变量 ---------- */
+#define MAX_GLOBALS 256
+typedef struct {
+    const char *name; int len;
+    int is_array; int arr_len; int is_float;
+    stmt_t *decl;
+    int id;
+} global_t;
+static global_t g_globals[MAX_GLOBALS];
+static int      g_nglobals = 0;
+
 static void emit(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(g_out, fmt, ap);
-    va_end(ap);
+    va_list ap; va_start(ap, fmt);
+    vfprintf(g_out, fmt, ap); va_end(ap);
 }
 
 static int new_label(void) { return g_label++; }
@@ -44,21 +49,22 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_nlocals++;
     return -g_stack_used;
 }
-
 static int local_add(const char *name, int len) {
     return local_add_ex(name, len, 0, 1, 0);
 }
 
-static int local_find_idx(const char *name, int len) {
+static int find_local(const char *name, int len) {
     for (int i = g_nlocals - 1; i >= 0; i--)
         if (g_locals[i].len == len && memcmp(g_locals[i].name, name, len) == 0)
             return i;
-    fprintf(stderr, "错误: 未声明的变量 %.*s\n", len, name);
-    exit(1);
+    return -1;
 }
 
-static int local_find(const char *name, int len) {
-    return g_locals[local_find_idx(name, len)].offset;
+static int find_global(const char *name, int len) {
+    for (int i = 0; i < g_nglobals; i++)
+        if (g_globals[i].len == len && memcmp(g_globals[i].name, name, len) == 0)
+            return i;
+    return -1;
 }
 
 static int is_op_text(const char *t, int len, const char *s) {
@@ -66,8 +72,7 @@ static int is_op_text(const char *t, int len, const char *s) {
 }
 
 static int is_float_type(type_desc_t *t) {
-    const char *b = t->base;
-    int l = t->base_len;
+    const char *b = t->base; int l = t->base_len;
     if (l == 6 && (memcmp(b, "双精", 6) == 0 ||
                    memcmp(b, "浮点", 6) == 0 ||
                    memcmp(b, "double", 6) == 0)) return 1;
@@ -77,43 +82,118 @@ static int is_float_type(type_desc_t *t) {
 
 static int str_add(const char *s, int len) {
     int id = g_str_id++;
-    emit("    .section .rodata\n");
-    emit(".Lstr%d:\n", id);
-    emit("    .byte ");
+    emit("    .section .rodata\n.Lstr%d:\n    .byte ", id);
     for (int i = 0; i < len; i++) emit("%d, ", (unsigned char)s[i]);
-    emit("0\n");
-    emit("    .text\n");
+    emit("0\n    .text\n");
     return id;
 }
 
 static int float_add(double v) {
     int id = g_str_id++;
-    emit("    .section .rodata\n");
-    emit(".Lfloat%d:\n", id);
-    emit("    .double %.17g\n", v);
-    emit("    .text\n");
+    emit("    .section .rodata\n.Lfloat%d:\n    .double %.17g\n    .text\n", id, v);
     return id;
 }
 
+static void gen_expr(expr_t *e);
 static void gen_binop(const char *op, int len);
 static void gen_binop_float(const char *op, int len);
-static void gen_expr(expr_t *e);
 
 static int expr_is_float(expr_t *e) {
     if (!e) return 0;
     switch (e->kind) {
         case EX_FLOAT: return 1;
         case EX_IDENT: {
-            int i = local_find_idx(e->name, e->name_len);
-            return g_locals[i].is_float;
-        }
-        case EX_BINARY:
-            return expr_is_float(e->left) || expr_is_float(e->right);
-        case EX_UNARY:
-            return expr_is_float(e->operand);
-        default:
+            int li = find_local(e->name, e->name_len);
+            if (li >= 0) return g_locals[li].is_float;
+            int gi = find_global(e->name, e->name_len);
+            if (gi >= 0) return g_globals[gi].is_float;
             return 0;
+        }
+        case EX_BINARY: return expr_is_float(e->left) || expr_is_float(e->right);
+        case EX_UNARY:  return expr_is_float(e->operand);
+        default: return 0;
     }
+}
+
+/* 生成“取变量值”的汇编 */
+static void gen_load_var(const char *name, int len) {
+    int li = find_local(name, len);
+    if (li >= 0) {
+        if (g_locals[li].is_array)      emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset);
+        else if (g_locals[li].is_float) emit("    movsd %d(%%rbp), %%xmm0\n", g_locals[li].offset);
+        else                             emit("    movq %d(%%rbp), %%rax\n", g_locals[li].offset);
+        return;
+    }
+    int gi = find_global(name, len);
+    if (gi >= 0) {
+        if (g_globals[gi].is_array)      emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
+        else if (g_globals[gi].is_float) emit("    movsd g%d(%%rip), %%xmm0\n", g_globals[gi].id);
+        else                             emit("    movq g%d(%%rip), %%rax\n", g_globals[gi].id);
+        return;
+    }
+    fprintf(stderr, "错误: 未声明的变量 %.*s\n", len, name);
+    exit(1);
+}
+
+/* 收集全局变量声明（递归） */
+static void collect_globals(stmt_t *s) {
+    if (!s) return;
+    if (s->kind == ST_LET && s->type.is_static) {
+        int is_f = is_float_type(&s->type);
+        int is_arr = s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT;
+        int n = is_arr ? s->init->nargs : 0;
+        g_globals[g_nglobals].name = s->name;
+        g_globals[g_nglobals].len = s->name_len;
+        g_globals[g_nglobals].decl = s;
+        g_globals[g_nglobals].is_float = is_f;
+        g_globals[g_nglobals].is_array = is_arr;
+        g_globals[g_nglobals].arr_len = n;
+        g_globals[g_nglobals].id = g_nglobals;
+        g_nglobals++;
+    }
+    switch (s->kind) {
+        case ST_BLOCK:
+            for (int i = 0; i < s->nstmts; i++) collect_globals(s->stmts[i]);
+            break;
+        case ST_IF:
+            collect_globals(s->then_s);
+            collect_globals(s->else_s);
+            break;
+        case ST_WHILE:
+        case ST_FOR:
+            collect_globals(s->body);
+            break;
+        default: break;
+    }
+}
+
+/* 输出 .data 段（只能常量初始化） */
+static void emit_globals(void) {
+    if (g_nglobals == 0) return;
+    emit("    .data\n");
+    for (int i = 0; i < g_nglobals; i++) {
+        global_t *g = &g_globals[i];
+        emit("    .align 8\n");
+        emit("g%d:\n", g->id);
+        stmt_t *d = g->decl;
+        if (g->is_array) {
+            for (int k = 0; k < g->arr_len; k++) {
+                expr_t *el = d->init->args[k];
+                if (el->kind == EX_INT)        emit("    .quad %lld\n", (long long)el->ival);
+                else if (el->kind == EX_FLOAT) emit("    .double %.17g\n", el->fval);
+                else                           emit("    .quad 0\n");
+            }
+        } else if (g->is_float) {
+            double v = 0.0;
+            if (d->init && d->init->kind == EX_FLOAT) v = d->init->fval;
+            emit("    .double %.17g\n", v);
+        } else {
+            long long v = 0;
+            if (d->init && d->init->kind == EX_INT) v = (long long)d->init->ival;
+            emit("    .quad %lld\n", v);
+        }
+    }
+    emit("    .text\n");
 }
 
 static void gen_call(expr_t *e) {
@@ -129,20 +209,27 @@ static void gen_call(expr_t *e) {
         for (int i = 0; i < n; i++) {
             int is_f = expr_is_float(e->args[i]);
             gen_expr(e->args[i]);
+            int is_str = (e->args[i]->kind == EX_STRING);
             if (is_f) {
-                if (g_target_windows) {
-                    emit("    lea .Lfmt_f(%%rip), %%rcx\n");
-                } else {
-                    emit("    lea .Lfmt_f(%%rip), %%rdi\n");
-                }
+                if (g_target_windows) emit("    lea .Lfmt_f(%%rip), %%rcx\n");
+                else                  emit("    lea .Lfmt_f(%%rip), %%rdi\n");
                 emit("    movl $1, %%eax\n");
-            } else {
+            } else if (is_str) {
                 if (g_target_windows) {
                     emit("    mov %%rax, %%rdx\n");
                     emit("    lea .Lfmt_s(%%rip), %%rcx\n");
                 } else {
                     emit("    mov %%rax, %%rsi\n");
                     emit("    lea .Lfmt_s(%%rip), %%rdi\n");
+                }
+                emit("    movl $0, %%eax\n");
+            } else {
+                if (g_target_windows) {
+                    emit("    mov %%rax, %%rdx\n");
+                    emit("    lea .Lfmt_d(%%rip), %%rcx\n");
+                } else {
+                    emit("    mov %%rax, %%rsi\n");
+                    emit("    lea .Lfmt_d(%%rip), %%rdi\n");
                 }
                 emit("    movl $0, %%eax\n");
             }
@@ -170,36 +257,18 @@ static void gen_call(expr_t *e) {
 static void gen_expr(expr_t *e) {
     if (!e) return;
     switch (e->kind) {
-        case EX_INT:
-            emit("    movq $%lld, %%rax\n", (long long)e->ival);
-            break;
-        case EX_FLOAT: {
-            int id = float_add(e->fval);
-            emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id);
-            break;
-        }
-        case EX_STRING: {
-            int id = str_add(e->name, e->name_len);
-            emit("    lea .Lstr%d(%%rip), %%rax\n", id);
-            break;
-        }
-        case EX_IDENT: {
-            int i = local_find_idx(e->name, e->name_len);
-            if (g_locals[i].is_array) {
-                emit("    lea %d(%%rbp), %%rax\n", g_locals[i].offset);
-            } else if (g_locals[i].is_float) {
-                emit("    movsd %d(%%rbp), %%xmm0\n", g_locals[i].offset);
-            } else {
-                emit("    movq %d(%%rbp), %%rax\n", g_locals[i].offset);
-            }
-            break;
-        }
+        case EX_INT:    emit("    movq $%lld, %%rax\n", (long long)e->ival); break;
+        case EX_FLOAT: { int id = float_add(e->fval); emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id); break; }
+        case EX_STRING: { int id = str_add(e->name, e->name_len); emit("    lea .Lstr%d(%%rip), %%rax\n", id); break; }
+        case EX_IDENT:  gen_load_var(e->name, e->name_len); break;
         case EX_UNARY:
             if (is_op_text(e->op_text, e->op_len, "&") &&
                 e->operand->kind == EX_IDENT) {
-                int off = local_find(e->operand->name, e->operand->name_len);
-                emit("    lea %d(%%rbp), %%rax\n", off);
-                break;
+                int li = find_local(e->operand->name, e->operand->name_len);
+                if (li >= 0) { emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset); break; }
+                int gi = find_global(e->operand->name, e->operand->name_len);
+                if (gi >= 0) { emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id); break; }
+                fprintf(stderr, "错误: 未声明的变量\n"); exit(1);
             }
             gen_expr(e->operand);
             if (expr_is_float(e)) {
@@ -211,25 +280,19 @@ static void gen_expr(expr_t *e) {
             } else {
                 if      (is_op_text(e->op_text, e->op_len, "-")) emit("    neg %%rax\n");
                 else if (is_op_text(e->op_text, e->op_len, "!")) {
-                    emit("    test %%rax, %%rax\n");
-                    emit("    setz %%al\n");
-                    emit("    movzbq %%al, %%rax\n");
+                    emit("    test %%rax, %%rax\n    setz %%al\n    movzbq %%al, %%rax\n");
                 }
                 else if (is_op_text(e->op_text, e->op_len, "~")) emit("    not %%rax\n");
-                else if (is_op_text(e->op_text, e->op_len, "*")) {
-                    emit("    mov (%%rax), %%rax\n");
-                }
+                else if (is_op_text(e->op_text, e->op_len, "*")) emit("    mov (%%rax), %%rax\n");
             }
             break;
         case EX_BINARY: {
             int is_f = expr_is_float(e->left) || expr_is_float(e->right);
             if (is_f) {
                 gen_expr(e->right);
-                emit("    sub $8, %%rsp\n");
-                emit("    movsd %%xmm0, (%%rsp)\n");
+                emit("    sub $8, %%rsp\n    movsd %%xmm0, (%%rsp)\n");
                 gen_expr(e->left);
-                emit("    movsd (%%rsp), %%xmm1\n");
-                emit("    add $8, %%rsp\n");
+                emit("    movsd (%%rsp), %%xmm1\n    add $8, %%rsp\n");
                 gen_binop_float(e->op_text, e->op_len);
             } else {
                 gen_expr(e->right);
@@ -244,26 +307,38 @@ static void gen_expr(expr_t *e) {
             gen_expr(e->left);
             emit("    push %%rax\n");
             gen_expr(e->right);
-            emit("    mov %%rax, %%rcx\n");
-            emit("    pop %%rax\n");
+            emit("    mov %%rax, %%rcx\n    pop %%rax\n");
             emit("    mov (%%rax, %%rcx, 8), %%rax\n");
             break;
-        case EX_ASSIGN:
+        case EX_ASSIGN: {
+            int li = -1, gi = -1;
             if (e->left->kind == EX_IDENT) {
-                int i = local_find_idx(e->left->name, e->left->name_len);
+                li = find_local(e->left->name, e->left->name_len);
+                if (li < 0) gi = find_global(e->left->name, e->left->name_len);
+                if (li < 0 && gi < 0) {
+                    fprintf(stderr, "错误: 未声明的变量 %.*s\n", e->left->name_len, e->left->name);
+                    exit(1);
+                }
                 gen_expr(e->right);
-                if (g_locals[i].is_float) {
-                    emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[i].offset);
+                if (li >= 0) {
+                    if (g_locals[li].is_float) emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
+                    else                       emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
                 } else {
-                    emit("    movq %%rax, %d(%%rbp)\n", g_locals[i].offset);
+                    if (g_globals[gi].is_float) emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
+                    else                        emit("    movq %%rax, g%d(%%rip)\n", g_globals[gi].id);
                 }
             }
             else if (e->left->kind == EX_UNARY &&
                      is_op_text(e->left->op_text, e->left->op_len, "*") &&
                      e->left->operand->kind == EX_IDENT) {
                 gen_expr(e->right);
-                int off = local_find(e->left->operand->name, e->left->operand->name_len);
-                emit("    movq %d(%%rbp), %%rcx\n", off);
+                int off = -1;
+                int li2 = find_local(e->left->operand->name, e->left->operand->name_len);
+                if (li2 >= 0) off = g_locals[li2].offset;
+                else { int gi2 = find_global(e->left->operand->name, e->left->operand->name_len);
+                       if (gi2 >= 0) { emit("    lea g%d(%%rip), %%rcx\n", g_globals[gi2].id);
+                                       emit("    movq (%%rcx), %%rcx\n"); off = -2; } }
+                if (off >= 0) emit("    movq %d(%%rbp), %%rcx\n", off);
                 emit("    movq %%rax, (%%rcx)\n");
             }
             else if (e->left->kind == EX_INDEX) {
@@ -272,16 +347,13 @@ static void gen_expr(expr_t *e) {
                 gen_expr(e->left->right);
                 emit("    push %%rax\n");
                 gen_expr(e->right);
-                emit("    pop %%rcx\n");
-                emit("    pop %%rdx\n");
+                emit("    pop %%rcx\n    pop %%rdx\n");
                 emit("    movq %%rax, (%%rdx, %%rcx, 8)\n");
             }
             break;
-        case EX_CALL:
-            gen_call(e);
-            break;
-        default:
-            break;
+        }
+        case EX_CALL: gen_call(e); break;
+        default: break;
     }
 }
 
@@ -289,34 +361,14 @@ static void gen_binop(const char *op, int len) {
     if      (is_op_text(op, len, "+"))  emit("    add %%rcx, %%rax\n");
     else if (is_op_text(op, len, "-"))  emit("    sub %%rcx, %%rax\n");
     else if (is_op_text(op, len, "*"))  emit("    imul %%rcx, %%rax\n");
-    else if (is_op_text(op, len, "/")) { emit("    cqto\n"); emit("    idiv %%rcx\n"); }
-    else if (is_op_text(op, len, "%")) {
-        emit("    cqto\n"); emit("    idiv %%rcx\n"); emit("    mov %%rdx, %%rax\n");
-    }
-    else if (is_op_text(op, len, "==")) {
-        emit("    cmp %%rcx, %%rax\n");
-        emit("    sete %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, "\\=")) {
-        emit("    cmp %%rcx, %%rax\n");
-        emit("    setne %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, "<")) {
-        emit("    cmp %%rcx, %%rax\n");
-        emit("    setl %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, ">")) {
-        emit("    cmp %%rcx, %%rax\n");
-        emit("    setg %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, "<=")) {
-        emit("    cmp %%rcx, %%rax\n");
-        emit("    setle %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, ">=")) {
-        emit("    cmp %%rcx, %%rax\n");
-        emit("    setge %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
+    else if (is_op_text(op, len, "/")) { emit("    cqto\n    idiv %%rcx\n"); }
+    else if (is_op_text(op, len, "%")) { emit("    cqto\n    idiv %%rcx\n    mov %%rdx, %%rax\n"); }
+    else if (is_op_text(op, len, "==")) { emit("    cmp %%rcx, %%rax\n    sete %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, "\\=")) { emit("    cmp %%rcx, %%rax\n    setne %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, "<"))  { emit("    cmp %%rcx, %%rax\n    setl %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, ">"))  { emit("    cmp %%rcx, %%rax\n    setg %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, "<=")) { emit("    cmp %%rcx, %%rax\n    setle %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, ">=")) { emit("    cmp %%rcx, %%rax\n    setge %%al\n    movzbq %%al, %%rax\n"); }
     else if (is_op_text(op, len, "&"))  emit("    and %%rcx, %%rax\n");
     else if (is_op_text(op, len, "|"))  emit("    or  %%rcx, %%rax\n");
     else if (is_op_text(op, len, "^"))  emit("    xor %%rcx, %%rax\n");
@@ -331,36 +383,19 @@ static void gen_binop_float(const char *op, int len) {
     else if (is_op_text(op, len, "-")) emit("    subsd %%xmm1, %%xmm0\n");
     else if (is_op_text(op, len, "*")) emit("    mulsd %%xmm1, %%xmm0\n");
     else if (is_op_text(op, len, "/")) emit("    divsd %%xmm1, %%xmm0\n");
-    else if (is_op_text(op, len, "==")) {
-        emit("    comisd %%xmm1, %%xmm0\n");
-        emit("    sete %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, "\\=")) {
-        emit("    comisd %%xmm1, %%xmm0\n");
-        emit("    setne %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, "<")) {
-        emit("    comisd %%xmm1, %%xmm0\n");
-        emit("    setb %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, ">")) {
-        emit("    comisd %%xmm1, %%xmm0\n");
-        emit("    seta %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, "<=")) {
-        emit("    comisd %%xmm1, %%xmm0\n");
-        emit("    setbe %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
-    else if (is_op_text(op, len, ">=")) {
-        emit("    comisd %%xmm1, %%xmm0\n");
-        emit("    setae %%al\n"); emit("    movzbq %%al, %%rax\n");
-    }
+    else if (is_op_text(op, len, "==")) { emit("    comisd %%xmm1, %%xmm0\n    sete %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, "\\=")) { emit("    comisd %%xmm1, %%xmm0\n    setne %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, "<"))  { emit("    comisd %%xmm1, %%xmm0\n    setb %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, ">"))  { emit("    comisd %%xmm1, %%xmm0\n    seta %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, "<=")) { emit("    comisd %%xmm1, %%xmm0\n    setbe %%al\n    movzbq %%al, %%rax\n"); }
+    else if (is_op_text(op, len, ">=")) { emit("    comisd %%xmm1, %%xmm0\n    setae %%al\n    movzbq %%al, %%rax\n"); }
 }
 
 static void gen_stmt(stmt_t *s) {
     if (!s) return;
     switch (s->kind) {
         case ST_LET: {
+            if (s->type.is_static) break;  /* 全局，已在 .data 里 */
             int is_f = is_float_type(&s->type);
             if (s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT) {
                 int n = s->init->nargs;
@@ -382,68 +417,53 @@ static void gen_stmt(stmt_t *s) {
             }
             break;
         }
-        case ST_EXPR:
-            gen_expr(s->expr);
-            break;
+        case ST_EXPR:   gen_expr(s->expr); break;
         case ST_RETURN:
             if (s->expr) gen_expr(s->expr);
             else emit("    movq $0, %%rax\n");
-            emit("    leave\n");
-            emit("    ret\n");
+            emit("    leave\n    ret\n");
             break;
         case ST_IF: {
-            int L_else = new_label();
-            int L_end = new_label();
+            int L_else = new_label(), L_end = new_label();
             gen_expr(s->cond);
-            emit("    test %%rax, %%rax\n");
-            emit("    jz .L%d\n", L_else);
+            emit("    test %%rax, %%rax\n    jz .L%d\n", L_else);
             gen_stmt(s->then_s);
-            emit("    jmp .L%d\n", L_end);
-            emit(".L%d:\n", L_else);
+            emit("    jmp .L%d\n.L%d:\n", L_end, L_else);
             if (s->else_s) gen_stmt(s->else_s);
             emit(".L%d:\n", L_end);
             break;
         }
         case ST_WHILE: {
-            int L_top = new_label();
-            int L_end = new_label();
+            int L_top = new_label(), L_end = new_label();
             emit(".L%d:\n", L_top);
             gen_expr(s->cond);
-            emit("    test %%rax, %%rax\n");
-            emit("    jz .L%d\n", L_end);
+            emit("    test %%rax, %%rax\n    jz .L%d\n", L_end);
             gen_stmt(s->body);
-            emit("    jmp .L%d\n", L_top);
-            emit(".L%d:\n", L_end);
+            emit("    jmp .L%d\n.L%d:\n", L_top, L_end);
             break;
         }
         case ST_FOR: {
-            int L_top = new_label();
-            int L_end = new_label();
+            int L_top = new_label(), L_end = new_label();
             if (s->for_init) gen_stmt(s->for_init);
             emit(".L%d:\n", L_top);
             if (s->for_cond) {
                 gen_expr(s->for_cond);
-                emit("    test %%rax, %%rax\n");
-                emit("    jz .L%d\n", L_end);
+                emit("    test %%rax, %%rax\n    jz .L%d\n", L_end);
             }
             gen_stmt(s->body);
             if (s->for_step) gen_expr(s->for_step);
-            emit("    jmp .L%d\n", L_top);
-            emit(".L%d:\n", L_end);
+            emit("    jmp .L%d\n.L%d:\n", L_top, L_end);
             break;
         }
         case ST_BLOCK:
             for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]);
             break;
-        default:
-            break;
+        default: break;
     }
 }
 
 static void gen_func(func_t *f) {
-    g_nlocals = 0;
-    g_stack_used = 0;
-
+    g_nlocals = 0; g_stack_used = 0;
     const char *name = f->name;
     int nlen = f->name_len;
 
@@ -455,9 +475,7 @@ static void gen_func(func_t *f) {
         emit("%.*s:\n", nlen, name);
     }
 
-    emit("    push %%rbp\n");
-    emit("    mov %%rsp, %%rbp\n");
-    emit("    sub $1024, %%rsp\n");
+    emit("    push %%rbp\n    mov %%rsp, %%rbp\n    sub $1024, %%rsp\n");
 
     static const char *pregs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     static const char *pregs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
@@ -469,30 +487,31 @@ static void gen_func(func_t *f) {
     }
 
     gen_stmt(f->body);
-
-    emit("    movq $0, %%rax\n");
-    emit("    leave\n");
-    emit("    ret\n");
+    emit("    movq $0, %%rax\n    leave\n    ret\n");
 }
 
 int codegen_program(program_t *p, const char *out_path) {
+    g_nglobals = 0;
+    for (int i = 0; i < p->nglobals; i++)
+        collect_globals(p->globals[i]);
+    for (int i = 0; i < p->nfuncs; i++)
+        collect_globals(p->funcs[i]->body);
+
     g_out = fopen(out_path, "w");
     if (!g_out) { perror(out_path); return -1; }
 
     emit("# 由 wescc 生成\n");
     emit("    .section .rodata\n");
-    emit(".Lfmt_s:\n");
-    emit("    .asciz \"%%s\"\n");
-    emit(".Lfmt_f:\n");
-    emit("    .asciz \"%%f\"\n");
+    emit(".Lfmt_s:\n    .asciz \"%%s\"\n");
+    emit(".Lfmt_d:\n    .asciz \"%%ld\"\n");
+    emit(".Lfmt_f:\n    .asciz \"%%f\"\n");
     emit("    .text\n");
+
+    emit_globals();
 
     for (int i = 0; i < p->nfuncs; i++) gen_func(p->funcs[i]);
 
-    emit("    .section .note.GNU-stack,\"\",@progbits\n");
-    emit("\n");
-
-    fclose(g_out);
-    g_out = 0;
+    emit("    .section .note.GNU-stack,\"\",@progbits\n\n");
+    fclose(g_out); g_out = 0;
     return 0;
 }

@@ -88,6 +88,7 @@ typedef struct {
 typedef struct {
     include_t *includes; int nincludes;
     func_t   **funcs;    int nfuncs;
+    stmt_t   **globals;  int nglobals;
 } program_t;
 
 void ast_free_program(program_t *p);

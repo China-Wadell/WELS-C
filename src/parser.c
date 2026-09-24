@@ -95,7 +95,7 @@ static int parse_type(parser_t *P, type_desc_t *out) {
         if (is_kw(P, KW_CONST))      { out->is_const = 1; p_advance(P); continue; }
         if (is_kw(P, KW_STATIC))     { out->is_static = 1; p_advance(P); continue; }
         if (is_kw(P, KW_LOCAL))      { out->is_local = 1; p_advance(P); continue; }
-        if (is_kw(P, KW_GLOBAL))     { p_advance(P); continue; }
+        if (is_kw(P, KW_GLOBAL))     { out->is_static = 1; p_advance(P); continue; }
         if (is_kw(P, KW_CONTAINER))  { out->is_container = 1; p_advance(P); continue; }
         break;
     }
@@ -653,6 +653,21 @@ int parse_program(lexer_t *L, program_t *out) {
             out->funcs = realloc(out->funcs, sizeof(func_t*) * (out->nfuncs + 1));
             out->funcs[out->nfuncs++] = f;
             continue;
+        }
+
+        /* 顶层全局变量：IDENT 后面跟 '为' */
+        if (P.cur.kind == TOK_IDENT) {
+            token_t save = P.cur;
+            p_peek(&P);
+            int next_is_is = (P.next.kind == TOK_KEYWORD && P.next.kw_id == KW_IS);
+            P.cur = save;
+            if (next_is_is) {
+                stmt_t *s = NULL;
+                if (parse_let(&P, &s) < 0) return -1;
+                out->globals = realloc(out->globals, sizeof(stmt_t*) * (out->nglobals + 1));
+                out->globals[out->nglobals++] = s;
+                continue;
+            }
         }
 
         return p_err(&P, "期望函数定义或预编译指令");
