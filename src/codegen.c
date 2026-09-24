@@ -3,11 +3,8 @@
 static FILE *g_out = 0;
 static int   g_label = 0;
 static int   g_str_id = 0;
-
-/* 新增这一行：目标平台标志 */
 static int   g_target_windows = 0;
 
-/* 新增这个函数：供外部设置目标平台 */
 void codegen_set_target(int is_windows) {
     g_target_windows = is_windows;
 }
@@ -32,7 +29,6 @@ static void emit(const char *fmt, ...) {
 
 static int new_label(void) { return g_label++; }
 
-/* 返回 offset（负数） */
 static int local_add(const char *name, int len) {
     g_stack_used += 8;
     g_locals[g_nlocals].name = name;
@@ -78,41 +74,29 @@ static void gen_call(expr_t *e) {
         (fnlen == 5 && memcmp(fn, "print", 5) == 0);
 
     if (is_print) {
-    if (g_target_windows) {
-        // Windows ABI 写法
-        for (int i = n - 1; i >= 0; i--) {
-            gen_expr(e->args[i]);
-            emit("    push %%rax\n");
-        }
-        // 预留 shadow space 并栈对齐 (32字节 + 8字节对齐)
-        emit("    sub $40, %%rsp\n");
-        for (int i = 0; i < n; i++) {
-            emit("    pop %%rdx\n"); // 参数放 %rdx (因为 %rcx 被格式串占用)
-            emit("    lea .Lfmt_s(%%rip), %%rcx\n");
-            emit("    movl $0, %%eax\n");
-            emit("    call printf\n");
-        }
-        emit("    add $40, %%rsp\n");
-        emit("    movq $0, %%rax\n");
-    } else {
-        // Linux ABI 写法 (你原来的代码)
         for (int i = n - 1; i >= 0; i--) {
             gen_expr(e->args[i]);
             emit("    push %%rax\n");
         }
         for (int i = 0; i < n; i++) {
-            emit("    pop %%rsi\n");
-            emit("    lea .Lfmt_s(%%rip), %%rdi\n");
+            if (g_target_windows) {
+                emit("    pop %%rdx\n");
+                emit("    lea .Lfmt_s(%%rip), %%rcx\n");
+            } else {
+                emit("    pop %%rsi\n");
+                emit("    lea .Lfmt_s(%%rip), %%rdi\n");
+            }
             emit("    movl $0, %%eax\n");
             emit("    call printf\n");
         }
         emit("    movq $0, %%rax\n");
+        return;
     }
-    return;
-}
 
-    /* 普通函数调用：System V ABI */
-    static const char *regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+    static const char *regs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+    static const char *regs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
+    const char **regs = g_target_windows ? regs_windows : regs_linux;
+
     for (int i = n - 1; i >= 0; i--) {
         gen_expr(e->args[i]);
         emit("    push %%rax\n");
@@ -144,6 +128,12 @@ static void gen_expr(expr_t *e) {
             break;
         }
         case EX_UNARY:
+            if (is_op_text(e->op_text, e->op_len, "&") &&
+                e->operand->kind == EX_IDENT) {
+                int off = local_find(e->operand->name, e->operand->name_len);
+                emit("    lea %d(%%rbp), %%rax\n", off);
+                break;
+            }
             gen_expr(e->operand);
             if      (is_op_text(e->op_text, e->op_len, "-")) emit("    neg %%rax\n");
             else if (is_op_text(e->op_text, e->op_len, "!")) {
@@ -152,6 +142,9 @@ static void gen_expr(expr_t *e) {
                 emit("    movzbq %%al, %%rax\n");
             }
             else if (is_op_text(e->op_text, e->op_len, "~")) emit("    not %%rax\n");
+            else if (is_op_text(e->op_text, e->op_len, "*")) {
+                emit("    mov (%%rax), %%rax\n");
+            }
             break;
         case EX_BINARY:
             gen_expr(e->right);
@@ -165,6 +158,13 @@ static void gen_expr(expr_t *e) {
             if (e->left->kind == EX_IDENT) {
                 int off = local_find(e->left->name, e->left->name_len);
                 emit("    movq %%rax, %d(%%rbp)\n", off);
+            }
+            else if (e->left->kind == EX_UNARY &&
+                     is_op_text(e->left->op_text, e->left->op_len, "*") &&
+                     e->left->operand->kind == EX_IDENT) {
+                int off = local_find(e->left->operand->name, e->left->operand->name_len);
+                emit("    movq %d(%%rbp), %%rcx\n", off);
+                emit("    movq %%rax, (%%rcx)\n");
             }
             break;
         case EX_CALL:
@@ -207,17 +207,11 @@ static void gen_binop(const char *op, int len) {
         emit("    cmp %%rcx, %%rax\n");
         emit("    setge %%al\n"); emit("    movzbq %%al, %%rax\n");
     }
-    /* WL-C26 第十七节：位运算符 */
     else if (is_op_text(op, len, "&"))  emit("    and %%rcx, %%rax\n");
     else if (is_op_text(op, len, "|"))  emit("    or  %%rcx, %%rax\n");
     else if (is_op_text(op, len, "^"))  emit("    xor %%rcx, %%rax\n");
-    else if (is_op_text(op, len, "<<")) {
-        emit("    shl %%cl, %%rax\n");
-    }
-    else if (is_op_text(op, len, ">>")) {
-        emit("    sar %%cl, %%rax\n");
-    }
-    /* 逻辑运算 */
+    else if (is_op_text(op, len, "<<")) emit("    shl %%cl, %%rax\n");
+    else if (is_op_text(op, len, ">>")) emit("    sar %%cl, %%rax\n");
     else if (is_op_text(op, len, "&&")) emit("    and %%rcx, %%rax\n");
     else if (is_op_text(op, len, "||")) emit("    or  %%rcx, %%rax\n");
 }
@@ -226,11 +220,8 @@ static void gen_stmt(stmt_t *s) {
     if (!s) return;
     switch (s->kind) {
         case ST_LET: {
-            if (s->init) {
-                gen_expr(s->init);
-            } else {
-                emit("    movq $0, %%rax\n");
-            }
+            if (s->init) gen_expr(s->init);
+            else emit("    movq $0, %%rax\n");
             int off = local_add(s->name, s->name_len);
             emit("    movq %%rax, %d(%%rbp)\n", off);
             break;
@@ -270,32 +261,20 @@ static void gen_stmt(stmt_t *s) {
             break;
         }
         case ST_FOR: {
-        int L_top = new_label();
-        int L_end = new_label();
-        
-        // 1. 执行初始化（比如 i = 0）
-        if (s->for_init) gen_stmt(s->for_init);
-
-        // 2. 循环条件检查点
-        emit(".L%d:\n", L_top);
-        if (s->for_cond) {
-            gen_expr(s->for_cond);
-            emit("    test %%rax, %%rax\n");
-            emit("    jz .L%d\n", L_end);
-        }
-
-        // 3. 执行循环体
-        gen_stmt(s->body);
-
-        // 4. 执行步进（比如 i = i + 1）
-        if (s->for_step) gen_expr(s->for_step);
-
-        // 5. 跳回条件检查
-        emit("    jmp .L%d\n", L_top);
-
-        // 6. 循环结束点
-        emit(".L%d:\n", L_end);
-        break;
+            int L_top = new_label();
+            int L_end = new_label();
+            if (s->for_init) gen_stmt(s->for_init);
+            emit(".L%d:\n", L_top);
+            if (s->for_cond) {
+                gen_expr(s->for_cond);
+                emit("    test %%rax, %%rax\n");
+                emit("    jz .L%d\n", L_end);
+            }
+            gen_stmt(s->body);
+            if (s->for_step) gen_expr(s->for_step);
+            emit("    jmp .L%d\n", L_top);
+            emit(".L%d:\n", L_end);
+            break;
         }
         case ST_BLOCK:
             for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]);
@@ -324,6 +303,15 @@ static void gen_func(func_t *f) {
     emit("    mov %%rsp, %%rbp\n");
     emit("    sub $1024, %%rsp\n");
 
+    static const char *pregs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+    static const char *pregs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
+    const char **pregs = g_target_windows ? pregs_windows : pregs_linux;
+
+    for (int i = 0; i < f->nparams && i < 6; i++) {
+        int off = local_add(f->params[i].name, f->params[i].name_len);
+        emit("    movq %s, %d(%%rbp)\n", pregs[i], off);
+    }
+
     gen_stmt(f->body);
 
     emit("    movq $0, %%rax\n");
@@ -344,7 +332,7 @@ int codegen_program(program_t *p, const char *out_path) {
     for (int i = 0; i < p->nfuncs; i++) gen_func(p->funcs[i]);
 
     emit("    .section .note.GNU-stack,\"\",@progbits\n");
-    emit("\n"); // 确保文件以空行和换行符结尾
+    emit("\n");
 
     fclose(g_out);
     g_out = 0;
