@@ -4,6 +4,7 @@ static FILE *g_out = 0;
 static int   g_label = 0;
 static int   g_target_windows = 0;
 static int   g_cur_line = 0;
+static int   g_binop_unsigned = 0;   /* 当前 gen_binop 的两个操作数是否无符号 */
 
 #define MAX_FUNC_SIGS 64
 typedef struct {
@@ -41,6 +42,8 @@ typedef struct {
     int64_t range_lo, range_hi;
     int range_lo_open, range_hi_open;
     int is_ptr;
+    int size;
+    int is_unsigned;
 } local_t;
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
@@ -52,6 +55,7 @@ typedef struct {
     int is_array; int arr_len; int is_float;
     stmt_t *decl; int id;
     int is_struct_inst; int struct_idx; int inst_idx;
+    int is_unsigned;
 } global_t;
 static global_t g_globals[MAX_GLOBALS];
 static int      g_nglobals = 0;
@@ -74,6 +78,8 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].cont_type = 0;
     g_locals[g_nlocals].is_range = 0;
     g_locals[g_nlocals].is_ptr = 0;
+    g_locals[g_nlocals].size = 8;
+    g_locals[g_nlocals].is_unsigned = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -113,6 +119,35 @@ static int find_struct_field(struct_def_t *sd, const char *name, int len) {
 static int is_op_text(const char *t, int len, const char *s) {
     return (int)strlen(s) == len && memcmp(t, s, len) == 0;
 }
+static int type_size(type_desc_t *t) {
+    if (t->is_ptr || t->is_array) return 8;
+    const char *b = t->base; int l = t->base_len;
+    if (l == 6 && memcmp(b, "字节", 6) == 0) return 1;
+    if (l == 4 && memcmp(b, "byte", 4) == 0) return 1;
+    if (l == 6 && memcmp(b, "字符", 6) == 0) return 1;
+    if (l == 4 && memcmp(b, "char", 4) == 0) return 1;
+    if (l == 6 && memcmp(b, "短整", 6) == 0) return 2;
+    if (l == 5 && memcmp(b, "short", 5) == 0) return 2;
+    if (l == 6 && memcmp(b, "整数", 6) == 0) return 4;
+    if (l == 3 && memcmp(b, "int", 3) == 0) return 4;
+    if (l == 6 && memcmp(b, "无符", 6) == 0) return 4;
+    if (l == 8 && memcmp(b, "unsigned", 8) == 0) return 4;
+    if (l == 6 && memcmp(b, "浮点", 6) == 0) return 4;
+    if (l == 5 && memcmp(b, "float", 5) == 0) return 4;
+    if (l == 6 && memcmp(b, "双精", 6) == 0) return 8;
+    if (l == 6 && memcmp(b, "double", 6) == 0) return 8;
+    if (l == 6 && memcmp(b, "长整", 6) == 0) return 8;
+    if (l == 4 && memcmp(b, "long", 4) == 0) return 8;
+    return 8;
+}
+
+static int type_is_unsigned(type_desc_t *t) {
+    const char *b = t->base; int l = t->base_len;
+    if (l == 6 && memcmp(b, "无符", 6) == 0) return 1;
+    if (l == 8 && memcmp(b, "unsigned", 8) == 0) return 1;
+    return 0;
+}
+
 static int is_float_type(type_desc_t *t) {
     const char *b = t->base; int l = t->base_len;
     if (l == 6 && (memcmp(b, "双精", 6) == 0 || memcmp(b, "浮点", 6) == 0 ||
@@ -195,6 +230,21 @@ static int expr_is_float(expr_t *e) {
     }
 }
 
+static int expr_is_unsigned(expr_t *e) {
+    if (!e) return 0;
+    if (e->kind == EX_IDENT) {
+        int li = find_local(e->name, e->name_len);
+        if (li >= 0) return g_locals[li].is_unsigned;
+        int gi = find_global(e->name, e->name_len);
+        if (gi >= 0) return g_globals[gi].is_unsigned;
+        return 0;
+    }
+    if (e->kind == EX_TYPED) return type_is_unsigned(&e->typed_type);
+    if (e->kind == EX_BINARY)
+        return expr_is_unsigned(e->left) || expr_is_unsigned(e->right);
+    return 0;
+}
+
 static int expr_is_ptr(expr_t *e) {
     if (!e) return 0;
     if (e->kind == EX_IDENT) {
@@ -235,7 +285,19 @@ static void gen_load_var(const char *name, int len) {
     if (li >= 0) {
         if (g_locals[li].is_array)      emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset);
         else if (g_locals[li].is_float) emit("    movsd %d(%%rbp), %%xmm0\n", g_locals[li].offset);
-        else                             emit("    movq %d(%%rbp), %%rax\n", g_locals[li].offset);
+        else if (g_locals[li].size == 1) {
+            if (g_locals[li].is_unsigned) emit("    movzbq %d(%%rbp), %%rax\n", g_locals[li].offset);
+            else                          emit("    movsbq %d(%%rbp), %%rax\n", g_locals[li].offset);
+        }
+        else if (g_locals[li].size == 2) {
+            if (g_locals[li].is_unsigned) emit("    movzwq %d(%%rbp), %%rax\n", g_locals[li].offset);
+            else                          emit("    movswq %d(%%rbp), %%rax\n", g_locals[li].offset);
+        }
+        else if (g_locals[li].size == 4) {
+            if (g_locals[li].is_unsigned) emit("    movl %d(%%rbp), %%eax\n", g_locals[li].offset);
+            else                          emit("    movslq %d(%%rbp), %%rax\n", g_locals[li].offset);
+        }
+        else                              emit("    movq %d(%%rbp), %%rax\n", g_locals[li].offset);
         return;
     }
     int gi = find_global(name, len);
@@ -267,6 +329,7 @@ static void collect_globals(stmt_t *s) {
         g_globals[g_nglobals].arr_len = n;
         g_globals[g_nglobals].id = g_nglobals;
         g_globals[g_nglobals].is_struct_inst = 0;
+        g_globals[g_nglobals].is_unsigned = type_is_unsigned(&s->type);
         g_nglobals++;
     }
     switch (s->kind) {
@@ -549,6 +612,8 @@ static void gen_expr(expr_t *e) {
                     emit("    push %%rax\n");
                     gen_expr(e->left);
                     emit("    pop %%rcx\n");
+                    g_binop_unsigned = expr_is_unsigned(e->left) ||
+                                       expr_is_unsigned(e->right);
                     gen_binop(e->op_text, e->op_len);
                 }
             }
@@ -722,19 +787,48 @@ static void gen_binop(const char *op, int len) {
         emit(".L%d:\n", L_end);
         emit("    mov %%r14, %%rax\n");
     }
-    else if (is_op_text(op, len, "/")) emit("    cqto\n    idiv %%rcx\n");
-    else if (is_op_text(op, len, "%")) emit("    cqto\n    idiv %%rcx\n    mov %%rdx, %%rax\n");
+    else if (is_op_text(op, len, "/")) {
+        if (g_binop_unsigned) emit("    xor %%rdx, %%rdx\n    div %%rcx\n");
+        else                  emit("    cqto\n    idiv %%rcx\n");
+    }
+    else if (is_op_text(op, len, "%")) {
+        if (g_binop_unsigned) emit("    xor %%rdx, %%rdx\n    div %%rcx\n    mov %%rdx, %%rax\n");
+        else                  emit("    cqto\n    idiv %%rcx\n    mov %%rdx, %%rax\n");
+    }
     else if (is_op_text(op, len, "==")) emit("    cmp %%rcx, %%rax\n    sete %%al\n    movzbq %%al, %%rax\n");
     else if (is_op_text(op, len, "\\=")) emit("    cmp %%rcx, %%rax\n    setne %%al\n    movzbq %%al, %%rax\n");
-    else if (is_op_text(op, len, "<"))  emit("    cmp %%rcx, %%rax\n    setl %%al\n    movzbq %%al, %%rax\n");
-    else if (is_op_text(op, len, ">"))  emit("    cmp %%rcx, %%rax\n    setg %%al\n    movzbq %%al, %%rax\n");
-    else if (is_op_text(op, len, "<=")) emit("    cmp %%rcx, %%rax\n    setle %%al\n    movzbq %%al, %%rax\n");
-    else if (is_op_text(op, len, ">=")) emit("    cmp %%rcx, %%rax\n    setge %%al\n    movzbq %%al, %%rax\n");
+    else if (is_op_text(op, len, "<")) {
+        emit("    cmp %%rcx, %%rax\n");
+        if (g_binop_unsigned) emit("    setb %%al\n");
+        else                  emit("    setl %%al\n");
+        emit("    movzbq %%al, %%rax\n");
+    }
+    else if (is_op_text(op, len, ">")) {
+        emit("    cmp %%rcx, %%rax\n");
+        if (g_binop_unsigned) emit("    seta %%al\n");
+        else                  emit("    setg %%al\n");
+        emit("    movzbq %%al, %%rax\n");
+    }
+    else if (is_op_text(op, len, "<=")) {
+        emit("    cmp %%rcx, %%rax\n");
+        if (g_binop_unsigned) emit("    setbe %%al\n");
+        else                  emit("    setle %%al\n");
+        emit("    movzbq %%al, %%rax\n");
+    }
+    else if (is_op_text(op, len, ">=")) {
+        emit("    cmp %%rcx, %%rax\n");
+        if (g_binop_unsigned) emit("    setae %%al\n");
+        else                  emit("    setge %%al\n");
+        emit("    movzbq %%al, %%rax\n");
+    }
     else if (is_op_text(op, len, "&"))  emit("    and %%rcx, %%rax\n");
     else if (is_op_text(op, len, "|"))  emit("    or  %%rcx, %%rax\n");
     else if (is_op_text(op, len, "^"))  emit("    xor %%rcx, %%rax\n");
     else if (is_op_text(op, len, "<<")) emit("    shl %%cl, %%rax\n");
-    else if (is_op_text(op, len, ">>")) emit("    sar %%cl, %%rax\n");
+    else if (is_op_text(op, len, ">>")) {
+        if (g_binop_unsigned) emit("    shr %%cl, %%rax\n");
+        else                  emit("    sar %%cl, %%rax\n");
+    }
     else if (is_op_text(op, len, "&&")) emit("    and %%rcx, %%rax\n");
     else if (is_op_text(op, len, "||")) emit("    or  %%rcx, %%rax\n");
 }
@@ -838,8 +932,10 @@ static void gen_stmt(stmt_t *s) {
                 if (s->init) gen_expr(s->init);
                 else emit("    movq $0, %%rax\n");
                 int off = local_add(s->name, s->name_len);
-                if (is_rng || is_pt) {
+                {
                     int li = find_local(s->name, s->name_len);
+                    g_locals[li].size = type_size(&s->type);
+                    g_locals[li].is_unsigned = type_is_unsigned(&s->type);
                     if (is_rng) {
                         g_locals[li].is_range       = 1;
                         g_locals[li].range_lo       = s->type.range_lo;
@@ -1080,6 +1176,7 @@ int codegen_program(program_t *p, const char *out_path) {
     emit("    .section .rodata\n");
     emit(".Lfmt_s:\n    .asciz \"%%s\"\n");
     emit(".Lfmt_d:\n    .asciz \"%%ld\"\n");
+    emit(".Lfmt_u:\n    .asciz \"%%lu\"\n");
     emit(".Lfmt_f:\n    .asciz \"%%f\"\n");
     emit("    .text\n");
     emit_globals();
