@@ -99,6 +99,7 @@ typedef struct {
     int is_struct_inst; int struct_idx; int inst_idx;
     int is_unsigned;
     int float_size;
+    int is_extern;
 } global_t;
 static global_t g_globals[MAX_GLOBALS];
 static int      g_nglobals = 0;
@@ -484,7 +485,7 @@ static void gen_load_var(const char *name, int len) {
 
 static void collect_globals(stmt_t *s) {
     if (!s) return;
-    if (s->kind == ST_LET && s->type.is_static) {
+    if (s->kind == ST_LET && (s->type.is_static || s->type.is_extern)) {
         int is_f = is_float_type(&s->type);
         int is_arr = s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT;
         int n = is_arr ? s->init->nargs : 0;
@@ -498,6 +499,7 @@ static void collect_globals(stmt_t *s) {
         g_globals[g_nglobals].is_struct_inst = 0;
         g_globals[g_nglobals].is_unsigned = type_is_unsigned(&s->type);
         g_globals[g_nglobals].float_size = is_f ? float_type_size(&s->type) : 0;
+        g_globals[g_nglobals].is_extern = s->type.is_extern;
         g_nglobals++;
     }
     switch (s->kind) {
@@ -534,7 +536,9 @@ static void emit_globals(void) {
     emit("    .data\n");
     for (int i = 0; i < g_nglobals; i++) {
         global_t *g = &g_globals[i];
+        if (g->is_extern) continue;
         emit("    .align 8\ng%d:\n", g->id);
+        if (g->is_extern) continue;
         if (g->is_struct_inst) {
             struct_def_t *sd = &g_prog->structs[g->struct_idx];
             int inst = g->inst_idx;

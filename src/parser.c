@@ -109,6 +109,7 @@ static int parse_type(parser_t *P, type_desc_t *out) {
 
     /* 修饰符（前缀） */
     for (;;) {
+        if (is_kw(P, KW_EXTERN))     { out->is_extern = 1; p_advance(P); continue; }
         if (is_kw(P, KW_CONST))      { out->is_const = 1; p_advance(P); continue; }
         if (is_kw(P, KW_STATIC))     { out->is_static = 1; p_advance(P); continue; }
         if (is_kw(P, KW_LOCAL))      { out->is_local = 1; p_advance(P); continue; }
@@ -142,11 +143,12 @@ static int parse_type(parser_t *P, type_desc_t *out) {
         return p_err(P, "期望类型");
     }
 
-    /* 无符 + 另一类型：无符 长整 / 无符 整数 / 无符 短整 */
+    /* 无符 + 类型关键字：无符 长整 / 无符 整数 / 无符 短整 / 无符 字符 */
     if (out->base_len == 6 && memcmp(out->base, "无符", 6) == 0) {
         p_peek(P);
-        if (P->cur.kind == TOK_KEYWORD || P->cur.kind == TOK_IDENT) {
-            /* 记下 无符，base 换成第二个 */
+        if (P->cur.kind == TOK_KEYWORD &&
+            (P->cur.kw_id == KW_INT  || P->cur.kw_id == KW_LONG ||
+             P->cur.kw_id == KW_SHORT|| P->cur.kw_id == KW_CHAR)) {
             out->base = P->cur.start;
             out->base_len = P->cur.len;
             out->is_unsigned = 1;
@@ -1532,6 +1534,18 @@ int parse_program(lexer_t *L, program_t *out) {
             if (parse_func(&P, &f) < 0) return -1;
             out->funcs = realloc(out->funcs, sizeof(func_t*) * (out->nfuncs + 1));
             out->funcs[out->nfuncs++] = f;
+            continue;
+        }
+
+        /* 外部声明：外来 变量名 为 类型; */
+        if (is_kw(&P, KW_EXTERN)) {
+            p_advance(&P);
+            if (P.cur.kind != TOK_IDENT) return p_err(&P, "期望变量名");
+            stmt_t *s = NULL;
+            if (parse_let(&P, &s) < 0) return -1;
+            s->type.is_extern = 1;
+            out->globals = realloc(out->globals, sizeof(stmt_t*) * (out->nglobals + 1));
+            out->globals[out->nglobals++] = s;
             continue;
         }
 
