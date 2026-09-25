@@ -3,13 +3,25 @@
 *.s
 *.exe
 *.wes
+*.out
 a.out
 
-# 各子项目产物
+# 无扩展名的可执行文件（编译出来的）
+compiler/chararr
+compiler/hello2
+compiler/hello3
+compiler/hello_wels
+compiler/math2
+compiler/math_test
+compiler/mem_test
+compiler/string2
+compiler/string_test
 compiler/wescc
 compiler/wescc.exe
 compiler/out.s
 compiler/test
+examples/a010_demo
+tools/hello
 
 # 编辑器
 .vscode/
