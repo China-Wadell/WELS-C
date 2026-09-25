@@ -414,7 +414,12 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "-target") == 0 && i + 1 < argc) {
-            codegen_set_target(strcmp(argv[i+1], "windows") == 0);
+            if (strcmp(argv[i+1], "wels") == 0) {
+                codegen_set_wels(1);
+            } else {
+                codegen_set_wels(0);
+                codegen_set_target(strcmp(argv[i+1], "windows") == 0);
+            }
             i++;
         } else if (strcmp(argv[i], "-D") == 0 && i + 1 < argc) {
             add_macro(argv[i+1], (int)strlen(argv[i+1]), "", 0);

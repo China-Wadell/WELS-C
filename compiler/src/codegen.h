@@ -7,5 +7,6 @@ int codegen_program(program_t *p, const char *out_path);
 
 /* 新增这一行 */
 void codegen_set_target(int is_windows);
+void codegen_set_wels(int on);
 
 #endif

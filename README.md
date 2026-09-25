@@ -28,7 +28,7 @@ WELS-C 是 Wadell ES 生态的编程语言层。它采用中英双关键字，�
 
 ## 当前状态
 
-**版本：`a0.0.51`** —— runtime 联调通过
+**版本：`a0.0.52`** —— -target wels，打印走 runtime
 
 ### 已实现
 
@@ -64,6 +64,7 @@ WELS-C 是 Wadell ES 生态的编程语言层。它采用中英双关键字，�
 - ✅ Linux 目标（System V ABI）
 - ✅ Windows 目标（Windows x64 ABI）
 - ✅ runtime 联调通过（不依赖 libc）
+- ✅ `-target wels`：`打印` 自动走 runtime（不依赖 libc）
 
 ### 部分实现
 
@@ -130,6 +131,7 @@ wescc <file.wec> [-o out.s] [-target windows|linux] [-D NAME] [-I dir]
 | `-o out.s` | 输出汇编文件（默认 `out.s`） |
 | `-target linux` | 生成 Linux System V ABI 汇编（默认） |
 | `-target windows` | 生成 Windows x64 ABI 汇编 |
+| `-target wels` | 生成调用 WELS runtime 的汇编（不依赖 libc）|
 | `-D NAME` | 定义宏 |
 | `-I dir` | 加头文件搜索路径 |
 
@@ -280,6 +282,7 @@ x86-64 汇编 (.s)
 - [x] `a0.0.49` —— `#编示 once`、常量不能为 ∅、打印 ∅ 报错
 - [x] `a0.0.50` —— 结构体嵌套字段
 - [x] `a0.0.51` —— runtime 联调通过（不依赖 libc）
+- [x] `a0.0.52` —— -target wels，打印走 runtime
 
 ### 计划中
 

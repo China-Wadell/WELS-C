@@ -71,6 +71,8 @@ static int g_cont_stack[MAX_LOOPS];
 static int g_loop_depth = 0;
 
 void codegen_set_target(int is_windows) { g_target_windows = is_windows; }
+static int g_target_wels = 0;
+void codegen_set_wels(int on) { g_target_wels = on; }
 
 #define MAX_LOCALS 128
 typedef struct {
@@ -727,6 +729,25 @@ static void gen_call(expr_t *e) {
     int is_print = (fnlen == 6 && memcmp(fn, "打印", 6) == 0) ||
                    (fnlen == 5 && memcmp(fn, "print", 5) == 0);
     if (is_print) {
+        if (g_target_wels) {
+            /* WELS runtime：逐个参数调用 wels_print / wels_print_int / wels_print_float */
+            for (int i = 0; i < n; i++) {
+                int is_f = expr_is_float(e->args[i]);
+                int is_str = expr_is_string(e->args[i]);
+                gen_expr(e->args[i]);
+                if (is_str) {
+                    emit("    mov %%rax, %%rdi\n");
+                    emit("    call wels_print\n");
+                } else if (is_f) {
+                    emit("    call wels_print_float\n");
+                } else {
+                    emit("    mov %%rax, %%rdi\n");
+                    emit("    call wels_print_int\n");
+                }
+            }
+            emit("    movq $0, %%rax\n");
+            return;
+        }
         for (int i = 0; i < n; i++) {
             int is_f = expr_is_float(e->args[i]);
             int is_str = expr_is_string(e->args[i]);
