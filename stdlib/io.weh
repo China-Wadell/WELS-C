@@ -13,3 +13,7 @@ _注释_ io.weh — WELS-C 输入输出库
 函 打印整数 (n: 长整) -> 空 {
     wels_print_int(n);
 }
+
+函 打印浮点 (d: 双精) -> 空 {
+    wels_print_float(d);
+}
