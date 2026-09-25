@@ -986,23 +986,29 @@ static int parse_cont_clear(parser_t *P, stmt_t **out) {
 static int parse_range_bound(parser_t *P, int64_t *val, int *is_inf) {
     *is_inf = 0;
     int neg = 0;
+    int has_sign = 0;
     p_peek(P);
-    if (is_op(P, "-")) { neg = 1; p_advance(P); p_peek(P); }
+    if (is_op(P, "+")) { has_sign = 1; p_advance(P); p_peek(P); }
+    else if (is_op(P, "-")) { neg = 1; has_sign = 1; p_advance(P); p_peek(P); }
+
     if (P->cur.kind == TOK_NUM_INT) {
         *val = neg ? -(int64_t)P->cur.ival : (int64_t)P->cur.ival;
         p_advance(P);
         return 0;
     }
+
+    /* ∞ 识别（UTF-8 编码 E2 88 9E） */
     if (P->cur.kind == TOK_IDENT && P->cur.len == 3 &&
         (unsigned char)P->cur.start[0] == 0xE2 &&
         (unsigned char)P->cur.start[1] == 0x88 &&
         (unsigned char)P->cur.start[2] == 0x9E) {
+        if (!has_sign) return p_err(P, "无穷必须带符号：+∞ 或 -∞");
         *is_inf = 1;
         *val = neg ? INT64_MIN : INT64_MAX;
         p_advance(P);
         return 0;
     }
-    return p_err(P, "期望边界数字或 ∞");
+    return p_err(P, "期望边界数字或 +∞ / -∞");
 }
 
 static int parse_range_bounds(parser_t *P, type_desc_t *ty) {
@@ -1020,6 +1026,10 @@ static int parse_range_bounds(parser_t *P, type_desc_t *ty) {
     if      (is_punct(P, ')')) { hi_open = 1; p_advance(P); }
     else if (is_punct(P, ']')) { hi_open = 0; p_advance(P); }
     else return p_err(P, "期望 ')' 或 ']'");
+
+    /* 无穷只能在开区间端点 */
+    if (lo_inf && !lo_open) return p_err(P, "无穷只能在开区间：[-∞ 非法");
+    if (hi_inf && !hi_open) return p_err(P, "无穷只能在开区间：+∞] 非法");
 
     ty->range_lo = lo;
     ty->range_hi = hi;
