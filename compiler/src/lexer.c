@@ -82,7 +82,7 @@ static const kw_entry_t g_kws[] = {
     { "∅", 3, KW_EMPTY },
 
     /* 声明前缀 */
-    { "设", 3, KW_SET },
+    { "设", 3, KW_SET }, { "let", 3, KW_SET },
 
     /* 模块 */
     { "call", 4, KW_CALL }, { "调用", 6, KW_CALL },

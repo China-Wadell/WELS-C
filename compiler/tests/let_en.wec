@@ -1,0 +1,6 @@
+fn main () -> int {
+    let a is int 10;
+    let b is int 20;
+    print("a + b = ", a + b, \n);
+    return 0;
+}
