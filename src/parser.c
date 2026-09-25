@@ -1042,6 +1042,21 @@ static int parse_let(parser_t *P, stmt_t **out) {
     int was_const = 0;
     if (is_kw(P, KW_IS)) {
         p_advance(P);
+        /* b 为 引用 a; */
+        p_peek(P);
+        if (is_kw(P, KW_REF)) {
+            p_advance(P);
+            if (P->cur.kind != TOK_IDENT) return p_err(P, "期望被引用变量名");
+            s->type.is_ref = 1;
+            expr_t *tgt = new_expr(EX_IDENT);
+            tgt->name = P->cur.start;
+            tgt->name_len = P->cur.len;
+            p_advance(P);
+            s->init = tgt;
+            if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+            *out = s;
+            return 0;
+        }
     } else if (is_kw(P, KW_CONST)) {
         was_const = 1;
         p_advance(P);
