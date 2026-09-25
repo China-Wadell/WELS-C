@@ -121,9 +121,34 @@ void wels_exit(int code) {
     sys_exit(code);
 }
 
-/* 程序入口 */
+/* 命令行参数 */
+static long   g_argc = 0;
+static char **g_argv = 0;
+
+long wels_argc(void) { return g_argc; }
+
+char *wels_argv(long i) {
+    if (i < 0 || i >= g_argc) return 0;
+    return g_argv[i];
+}
+
+/* 程序入口（naked：直接读 rsp 拿 argc/argv） */
 extern int main(void);
-void _start(void) {
+void wels_start(long argc, char **argv);
+
+__attribute__((naked)) void _start(void) {
+    __asm__ volatile (
+        "xor %rbp, %rbp\n"
+        "mov (%rsp), %rdi\n"
+        "lea 8(%rsp), %rsi\n"
+        "and $-16, %rsp\n"
+        "call wels_start\n"
+    );
+}
+
+void wels_start(long argc, char **argv) {
+    g_argc = argc;
+    g_argv = argv;
     int ret = main();
     sys_exit(ret);
 }

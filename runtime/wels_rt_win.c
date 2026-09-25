@@ -7,6 +7,36 @@ typedef int BOOL;
 __declspec(dllimport) HANDLE __stdcall GetStdHandle(DWORD nStdHandle);
 __declspec(dllimport) BOOL   __stdcall WriteFile(HANDLE, const void *, DWORD, DWORD *, void *);
 __declspec(dllimport) void   __stdcall ExitProcess(unsigned int);
+__declspec(dllimport) char * __stdcall GetCommandLineA(void);
+
+static long   g_argc = 0;
+static char **g_argv = 0;
+static char  *g_argv_buf[64];
+
+long wels_argc(void) { return g_argc; }
+
+char *wels_argv(long i) {
+    if (i < 0 || i >= g_argc) return 0;
+    return g_argv[i];
+}
+
+/* 简易解析：按空格切，不处理引号 */
+static void parse_cmdline(void) {
+    char *s = GetCommandLineA();
+    int in_tok = 0;
+    g_argc = 0;
+    for (; *s; s++) {
+        if (*s == ' ' || *s == '\t') {
+            if (in_tok) { *s = 0; in_tok = 0; }
+        } else {
+            if (!in_tok) {
+                if (g_argc < 63) g_argv_buf[g_argc++] = s;
+                in_tok = 1;
+            }
+        }
+    }
+    g_argv = g_argv_buf;
+}
 
 #define STD_OUTPUT_HANDLE ((DWORD)-11)
 
@@ -70,6 +100,7 @@ void wels_exit(int code) {
 
 extern int main(void);
 void mainCRTStartup(void) {
+    parse_cmdline();
     int ret = main();
     ExitProcess((unsigned)ret);
 }

@@ -1,0 +1,12 @@
+_注释_ arg.weh — WELS-C 命令行参数库
+
+外来 函 wels_argc () -> 长整;
+外来 函 wels_argv (i: 长整) -> 字符串;
+
+函 参数个数 () -> 长整 {
+    返 wels_argc();
+}
+
+函 参数 (i: 长整) -> 字符串 {
+    返 wels_argv(i);
+}
