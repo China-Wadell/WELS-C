@@ -1,0 +1,6 @@
+_注释_ WELS-C 最小运行时声明
+
+外来 函 wels_print (s: 字符串) -> 空;
+外来 函 wels_print_int (n: 长整) -> 空;
+外来 函 wels_print_float (d: 双精) -> 空;
+外来 函 wels_exit (code: 整数) -> 空;

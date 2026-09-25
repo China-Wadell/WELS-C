@@ -1,0 +1,11 @@
+外来 函 wels_print (s: 字符串) -> 空;
+外来 函 wels_print_int (n: 长整) -> 空;
+
+函 主 () -> 整数 {
+    wels_print("hello, WELS-C");
+    wels_print(\n);
+    wels_print("1 + 2 = ");
+    wels_print_int(1 + 2);
+    wels_print(\n);
+    返 0;
+}

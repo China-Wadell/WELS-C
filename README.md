@@ -28,7 +28,7 @@ WELS-C 是 Wadell ES 生态的编程语言层。它采用中英双关键字，�
 
 ## 当前状态
 
-**版本：`a0.0.50`** —— 编译器语义基本完整
+**版本：`a0.0.51`** —— runtime 联调通过
 
 ### 已实现
 
@@ -63,6 +63,7 @@ WELS-C 是 Wadell ES 生态的编程语言层。它采用中英双关键字，�
 - ✅ 命令行 `-D` / `-I` / `-target`
 - ✅ Linux 目标（System V ABI）
 - ✅ Windows 目标（Windows x64 ABI）
+- ✅ runtime 联调通过（不依赖 libc）
 
 ### 部分实现
 
@@ -86,7 +87,7 @@ WELS-C/
 │   ├── tests/          测试
 │   ├── Makefile
 │   └── run_tests.sh
-├── runtime/            WELS-C 运行时（待开发）
+├── runtime/            WELS-C 运行时（最小版）
 ├── stdlib/             标准库（待开发）
 ├── tools/              工具链（待开发）
 ├── editor/             编辑器支持（待开发）
@@ -278,6 +279,7 @@ x86-64 汇编 (.s)
 - [x] `a0.0.48` —— 变长参数
 - [x] `a0.0.49` —— `#编示 once`、常量不能为 ∅、打印 ∅ 报错
 - [x] `a0.0.50` —— 结构体嵌套字段
+- [x] `a0.0.51` —— runtime 联调通过（不依赖 libc）
 
 ### 计划中
 

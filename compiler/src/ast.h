@@ -75,9 +75,10 @@ typedef struct {
     type_desc_t ret_type; int has_ret;
     int has_varargs;
     stmt_t *body;
-    int category;                    /* 0=主文件函数/函数类, 1=模块函数类 */
+    int category;
     const char *module_name;
     int module_name_len;
+    int is_extern;
 } func_t;
 
 typedef struct { const char *text; int len; } include_t;

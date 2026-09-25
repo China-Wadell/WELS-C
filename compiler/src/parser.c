@@ -1462,7 +1462,7 @@ static int parse_block(parser_t *P, stmt_t **out) {
 }
 
 /* 函 名 (a: 类型, ...) -> 类型 { } */
-static int parse_func(parser_t *P, func_t **out) {
+static int parse_func(parser_t *P, func_t **out, int is_extern) {
     func_t *f = calloc(1, sizeof(*f));
     if (!f) { fprintf(stderr, "out of memory\n"); exit(1); }
 
@@ -1512,6 +1512,12 @@ static int parse_func(parser_t *P, func_t **out) {
         f->has_ret = 1;
     }
 
+    f->is_extern = is_extern;
+    if (is_extern) {
+        if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+        *out = f;
+        return 0;
+    }
     if (parse_block(P, &f->body) < 0) return -1;
     f->category = g_parse_category;
     f->module_name = g_parse_module_name;
@@ -1581,7 +1587,7 @@ int parse_program(lexer_t *L, program_t *out) {
         if (is_kw(&P, KW_FN)) {
             p_advance(&P);
             func_t *f = NULL;
-            if (parse_func(&P, &f) < 0) return -1;
+            if (parse_func(&P, &f, 0) < 0) return -1;
             out->funcs = realloc(out->funcs, sizeof(func_t*) * (out->nfuncs + 1));
             out->funcs[out->nfuncs++] = f;
             continue;
@@ -1590,7 +1596,17 @@ int parse_program(lexer_t *L, program_t *out) {
         /* 外部声明：外来 变量名 为 类型; */
         if (is_kw(&P, KW_EXTERN)) {
             p_advance(&P);
-            if (P.cur.kind != TOK_IDENT) return p_err(&P, "期望变量名");
+            /* 外来 函 名(参数) -> 类型; */
+            if (is_kw(&P, KW_FN)) {
+                p_advance(&P);
+                func_t *f = NULL;
+                if (parse_func(&P, &f, 1) < 0) return -1;
+                out->funcs = realloc(out->funcs, sizeof(func_t*) * (out->nfuncs + 1));
+                out->funcs[out->nfuncs++] = f;
+                continue;
+            }
+            /* 外来 变量 为 类型; */
+            if (P.cur.kind != TOK_IDENT) return p_err(&P, "期望变量名或函");
             stmt_t *s = NULL;
             if (parse_let(&P, &s) < 0) return -1;
             s->type.is_extern = 1;

@@ -283,6 +283,7 @@ static void emit_floats(void) {
 }
 
 static int str_add(const char *s, int len);
+static void gen_addr(expr_t *e);
 static void gen_expr(expr_t *e);
 static void gen_binop(const char *op, int len);
 static void gen_binop_float(const char *op, int len);
@@ -434,6 +435,14 @@ static void gen_addr(expr_t *e) {
             if (gi >= 0) { emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id); return; }
             fprintf(stderr, "%d: 错误: 未声明的变量 %.*s\n", g_cur_line, e->name_len, e->name);
             exit(1);
+        }
+        case EX_INDEX: {
+            gen_expr(e->left);
+            emit("    push %%rax\n");
+            gen_expr(e->right);
+            emit("    mov %%rax, %%rcx\n    pop %%rax\n");
+            emit("    lea (%%rax, %%rcx, 8), %%rax\n");
+            return;
         }
         case EX_MEMBER: {
             gen_addr(e->left);
@@ -921,12 +930,10 @@ static void gen_expr(expr_t *e) {
                 }
                 break;
             }
-            if (is_op_text(e->op_text, e->op_len, "&") && e->operand->kind == EX_IDENT) {
-                int li = find_local(e->operand->name, e->operand->name_len);
-                if (li >= 0) { emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset); break; }
-                int gi = find_global(e->operand->name, e->operand->name_len);
-                if (gi >= 0) { emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id); break; }
-                fprintf(stderr, "错误: 未声明的变量\n"); exit(1);
+            if (is_op_text(e->op_text, e->op_len, "&")) {
+                /* & 统一走 gen_addr */
+                gen_addr(e->operand);
+                break;
             }
             gen_expr(e->operand);
             if (expr_is_float(e)) {
@@ -1641,6 +1648,20 @@ static void gen_stmt(stmt_t *s) {
 }
 
 static void gen_func(func_t *f) {
+    /* 外部函数：只登记签名，不生成符号 */
+    if (f->is_extern) {
+        if (g_nfunc_sigs < MAX_FUNC_SIGS) {
+            func_sig_t *sig = &g_func_sigs[g_nfunc_sigs++];
+            sig->name = f->name;
+            sig->len = f->name_len;
+            sig->is_float_ret = f->has_ret && is_float_type(&f->ret_type);
+            sig->nparams = f->nparams > 8 ? 8 : f->nparams;
+            for (int i = 0; i < sig->nparams; i++)
+                sig->param_is_float[i] = is_float_type(&f->params[i].type);
+            sig->has_varargs = f->has_varargs;
+        }
+        return;
+    }
     if (g_nfunc_sigs < MAX_FUNC_SIGS) {
         func_sig_t *sig = &g_func_sigs[g_nfunc_sigs];
         sig->name = f->name;
