@@ -42,7 +42,7 @@ static int file_exists(const char *p) {
     return stat(p, &st) == 0;
 }
 
-__attribute__((unused)) static const char *resolve_path(const char *name, char *out, int out_sz) {
+static const char *resolve_path(const char *name, char *out, int out_sz) {
     if (name[0] == '/' || name[0] == '\\' || (name[0] && name[1] == ':')) {
         if (file_exists(name)) { snprintf(out, out_sz, "%s", name); return out; }
         return NULL;
@@ -181,8 +181,8 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
                     int name_len = plen - name_start;
 
                     char full[1024];
-                    if (path[0] == '/' || path[0] == '\\') snprintf(full, sizeof(full), "%s", path);
-                    else                                     snprintf(full, sizeof(full), "%s/%s", base_dir, path);
+                    const char *resolved = resolve_path(path, full, sizeof(full));
+                    if (!resolved) { fprintf(stderr, "错误: 无法打开模块 %s\n", path); exit(1); }
 
                     /* 登记到模块列表（去重） */
                     if (g_nmodules < MAX_MODULES) {
@@ -220,8 +220,8 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
                     if (plen >= 512) plen = 511;
                     memcpy(path, src + i + 2, plen); path[plen] = 0;
                     char full[1024];
-                    if (path[0] == '/' || path[0] == '\\') snprintf(full, sizeof(full), "%s", path);
-                    else                                    snprintf(full, sizeof(full), "%s/%s", base_dir, path);
+                    const char *resolved = resolve_path(path, full, sizeof(full));
+                    if (!resolved) { fprintf(stderr, "错误: 无法打开头文件 %s\n", path); exit(1); }
                     if (already_included(full)) { i = j + 1; at_line_start = 0; continue; }
                     int hlen;
                     char *hsrc = read_file(full, &hlen);

@@ -1,0 +1,15 @@
+_注释_ io.weh — WELS-C 输入输出库
+
+外来 函 wels_print (s: 字符串) -> 空;
+外来 函 wels_print_int (n: 长整) -> 空;
+外来 函 wels_print_float (d: 双精) -> 空;
+外来 函 wels_exit (code: 整数) -> 空;
+
+函 打印行 (s: 字符串) -> 空 {
+    wels_print(s);
+    wels_print(\n);
+}
+
+函 打印整数 (n: 长整) -> 空 {
+    wels_print_int(n);
+}
