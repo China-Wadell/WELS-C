@@ -1,0 +1,22 @@
+fn add (a: int, b: int) -> int {
+    return a + b;
+}
+
+fn main () -> int {
+    a is int 10;
+    b is int 20;
+    if a < b {
+        print("a 小"\n);
+    } else {
+        print("a 大"\n);
+    }
+    i is int 0;
+    for i is int 0; i < 3; i = i + 1 {
+        print("循环一次"\n);
+    }
+    x is int add(1, 2);
+    if x == 3 {
+        print("英文关键字通过"\n);
+    }
+    return 0;
+}
