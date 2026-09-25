@@ -5,6 +5,7 @@ static int   g_label = 0;
 static int   g_target_windows = 0;
 static int   g_cur_line = 0;
 static int   g_binop_unsigned = 0;   /* 当前 gen_binop 的两个操作数是否无符号 */
+static int   g_cur_float_is_4 = 0;   /* 当前浮点运算是否为 4 字节 float */
 
 #define MAX_FUNC_SIGS 64
 typedef struct {
@@ -44,6 +45,7 @@ typedef struct {
     int is_ptr;
     int size;
     int is_unsigned;
+    int float_size;   /* 4 或 8，仅 is_float 时有效 */
 } local_t;
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
@@ -56,6 +58,7 @@ typedef struct {
     stmt_t *decl; int id;
     int is_struct_inst; int struct_idx; int inst_idx;
     int is_unsigned;
+    int float_size;
 } global_t;
 static global_t g_globals[MAX_GLOBALS];
 static int      g_nglobals = 0;
@@ -80,6 +83,7 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].is_ptr = 0;
     g_locals[g_nlocals].size = 8;
     g_locals[g_nlocals].is_unsigned = 0;
+    g_locals[g_nlocals].float_size = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -119,6 +123,13 @@ static int find_struct_field(struct_def_t *sd, const char *name, int len) {
 static int is_op_text(const char *t, int len, const char *s) {
     return (int)strlen(s) == len && memcmp(t, s, len) == 0;
 }
+static int float_type_size(type_desc_t *t) {
+    const char *b = t->base; int l = t->base_len;
+    if (l == 6 && memcmp(b, "浮点", 6) == 0) return 4;
+    if (l == 5 && memcmp(b, "float", 5) == 0) return 4;
+    return 8;
+}
+
 static int type_size(type_desc_t *t) {
     if (t->is_ptr || t->is_array) return 8;
     const char *b = t->base; int l = t->base_len;
@@ -187,21 +198,27 @@ static void emit_strings(void) {
 /* ---------- 浮点表（去重） ---------- */
 #define MAX_FLOATS 256
 static double g_floats[MAX_FLOATS];
+static int    g_float_sizes[MAX_FLOATS];
 static int    g_nfloats = 0;
 
-static int float_add(double v) {
+static int float_add(double v, int size) {
     for (int i = 0; i < g_nfloats; i++)
-        if (g_floats[i] == v) return i;
+        if (g_floats[i] == v && g_float_sizes[i] == size) return i;
     int id = g_nfloats++;
     g_floats[id] = v;
+    g_float_sizes[id] = size;
     return id;
 }
 
 static void emit_floats(void) {
     if (g_nfloats == 0) return;
     emit("    .section .rodata\n");
-    for (int i = 0; i < g_nfloats; i++)
-        emit(".Lfloat%d:\n    .double %.17g\n", i, g_floats[i]);
+    for (int i = 0; i < g_nfloats; i++) {
+        if (g_float_sizes[i] == 4)
+            emit(".Lfloat%d:\n    .float %g\n", i, (float)g_floats[i]);
+        else
+            emit(".Lfloat%d:\n    .double %.17g\n", i, g_floats[i]);
+    }
     emit("    .text\n");
 }
 
@@ -228,6 +245,29 @@ static int expr_is_float(expr_t *e) {
         case EX_UNARY:  return expr_is_float(e->operand);
         default: return 0;
     }
+}
+
+static int expr_float_size(expr_t *e) {
+    if (!e) return 0;
+    if (e->kind == EX_FLOAT) return 8;
+    if (e->kind == EX_IDENT) {
+        int li = find_local(e->name, e->name_len);
+        if (li >= 0 && g_locals[li].is_float) return g_locals[li].float_size;
+        int gi = find_global(e->name, e->name_len);
+        if (gi >= 0 && g_globals[gi].is_float) return g_globals[gi].float_size;
+        return 0;
+    }
+    if (e->kind == EX_TYPED) {
+        if (is_float_type(&e->typed_type)) return float_type_size(&e->typed_type);
+        return 0;
+    }
+    if (e->kind == EX_BINARY) {
+        int ls = expr_float_size(e->left);
+        int rs = expr_float_size(e->right);
+        if (ls && rs) return (ls > rs) ? ls : rs;
+        return ls ? ls : rs;
+    }
+    return 0;
 }
 
 static int expr_is_unsigned(expr_t *e) {
@@ -284,7 +324,14 @@ static void gen_load_var(const char *name, int len) {
     int li = find_local(name, len);
     if (li >= 0) {
         if (g_locals[li].is_array)      emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset);
-        else if (g_locals[li].is_float) emit("    movsd %d(%%rbp), %%xmm0\n", g_locals[li].offset);
+        else if (g_locals[li].is_float) {
+            if (g_locals[li].float_size == 4) {
+                emit("    movss %d(%%rbp), %%xmm1\n", g_locals[li].offset);
+                emit("    cvtss2sd %%xmm1, %%xmm0\n");
+            } else {
+                emit("    movsd %d(%%rbp), %%xmm0\n", g_locals[li].offset);
+            }
+        }
         else if (g_locals[li].size == 1) {
             if (g_locals[li].is_unsigned) emit("    movzbq %d(%%rbp), %%rax\n", g_locals[li].offset);
             else                          emit("    movsbq %d(%%rbp), %%rax\n", g_locals[li].offset);
@@ -330,6 +377,7 @@ static void collect_globals(stmt_t *s) {
         g_globals[g_nglobals].id = g_nglobals;
         g_globals[g_nglobals].is_struct_inst = 0;
         g_globals[g_nglobals].is_unsigned = type_is_unsigned(&s->type);
+        g_globals[g_nglobals].float_size = is_f ? float_type_size(&s->type) : 0;
         g_nglobals++;
     }
     switch (s->kind) {
@@ -426,8 +474,10 @@ static void gen_call(expr_t *e) {
                 else                  { emit("    mov %%rax, %%rsi\n    lea .Lfmt_s(%%rip), %%rdi\n"); }
                 emit("    movl $0, %%eax\n");
             } else {
-                if (g_target_windows) { emit("    mov %%rax, %%rdx\n    lea .Lfmt_d(%%rip), %%rcx\n"); }
-                else                  { emit("    mov %%rax, %%rsi\n    lea .Lfmt_d(%%rip), %%rdi\n"); }
+                int is_u = expr_is_unsigned(e->args[i]);
+                const char *fmt = is_u ? ".Lfmt_u" : ".Lfmt_d";
+                if (g_target_windows) { emit("    mov %%rax, %%rdx\n    lea %s(%%rip), %%rcx\n", fmt); }
+                else                  { emit("    mov %%rax, %%rsi\n    lea %s(%%rip), %%rdi\n", fmt); }
                 emit("    movl $0, %%eax\n");
             }
             emit("    call printf\n");
@@ -476,7 +526,7 @@ static void gen_expr(expr_t *e) {
     if (e->line > 0) g_cur_line = e->line;
     switch (e->kind) {
         case EX_INT: emit("    movq $%lld, %%rax\n", (long long)e->ival); break;
-        case EX_FLOAT: { int id = float_add(e->fval); emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id); break; }
+        case EX_FLOAT: { int id = float_add(e->fval, expr_float_size(e)); emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id); break; }
         case EX_STRING: { int id = str_add(e->name, e->name_len); emit("    lea .Lstr%d(%%rip), %%rax\n", id); break; }
         case EX_IDENT: gen_load_var(e->name, e->name_len); break;
         case EX_MEMBER: {
@@ -583,6 +633,7 @@ static void gen_expr(expr_t *e) {
                 emit("    sub $8, %%rsp\n    movsd %%xmm0, (%%rsp)\n");
                 gen_expr(e->left);
                 emit("    movsd (%%rsp), %%xmm1\n    add $8, %%rsp\n");
+                g_cur_float_is_4 = 0;
                 gen_binop_float(e->op_text, e->op_len);
             } else {
                 int lp = expr_is_ptr(e->left);
@@ -638,8 +689,21 @@ static void gen_expr(expr_t *e) {
                                                      e->right->operand->name_len);
                     if (sig && sig->is_float_ret) {
                         gen_expr(e->right);
-                        if (li >= 0) emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
-                        else         emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
+                        if (li >= 0) {
+                            if (g_locals[li].float_size == 4) {
+                                emit("    cvtsd2ss %%xmm0, %%xmm1\n");
+                                emit("    movss %%xmm1, %d(%%rbp)\n", g_locals[li].offset);
+                            } else {
+                                emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
+                            }
+                        } else {
+                            if (g_globals[gi].float_size == 4) {
+                                emit("    cvtsd2ss %%xmm0, %%xmm1\n");
+                                emit("    movss %%xmm1, g%d(%%rip)\n", g_globals[gi].id);
+                            } else {
+                                emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
+                            }
+                        }
                         break;
                     }
                 }
@@ -690,10 +754,24 @@ static void gen_expr(expr_t *e) {
                         emit("    movq %%rcx, %d(%%rbp)\n", g_locals[li].offset);
                         emit(".L%d:\n", L_skip);
                     }
-                    else if (g_locals[li].is_float) emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
+                    else if (g_locals[li].is_float) {
+                        if (g_locals[li].float_size == 4) {
+                            emit("    cvtsd2ss %%xmm0, %%xmm1\n");
+                            emit("    movss %%xmm1, %d(%%rbp)\n", g_locals[li].offset);
+                        } else {
+                            emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
+                        }
+                    }
                     else                            emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
                 } else {
-                    if (g_globals[gi].is_float) emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
+                    if (g_globals[gi].is_float) {
+                        if (g_globals[gi].float_size == 4) {
+                            emit("    cvtsd2ss %%xmm0, %%xmm1\n");
+                            emit("    movss %%xmm1, g%d(%%rip)\n", g_globals[gi].id);
+                        } else {
+                            emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
+                        }
+                    }
                     else                        emit("    movq %%rax, g%d(%%rip)\n", g_globals[gi].id);
                 }
             }
@@ -834,10 +912,11 @@ static void gen_binop(const char *op, int len) {
 }
 
 static void gen_binop_float(const char *op, int len) {
-    if      (is_op_text(op, len, "+")) emit("    addsd %%xmm1, %%xmm0\n");
-    else if (is_op_text(op, len, "-")) emit("    subsd %%xmm1, %%xmm0\n");
-    else if (is_op_text(op, len, "*")) emit("    mulsd %%xmm1, %%xmm0\n");
-    else if (is_op_text(op, len, "/")) emit("    divsd %%xmm1, %%xmm0\n");
+    const char *suf = g_cur_float_is_4 ? "ss" : "sd";
+    if      (is_op_text(op, len, "+")) emit("    add%s %%xmm1, %%xmm0\n", suf);
+    else if (is_op_text(op, len, "-")) emit("    sub%s %%xmm1, %%xmm0\n", suf);
+    else if (is_op_text(op, len, "*")) emit("    mul%s %%xmm1, %%xmm0\n", suf);
+    else if (is_op_text(op, len, "/")) emit("    div%s %%xmm1, %%xmm0\n", suf);
     else if (is_op_text(op, len, "==")) emit("    comisd %%xmm1, %%xmm0\n    sete %%al\n    movzbq %%al, %%rax\n");
     else if (is_op_text(op, len, "\\=")) emit("    comisd %%xmm1, %%xmm0\n    setne %%al\n    movzbq %%al, %%rax\n");
     else if (is_op_text(op, len, "<"))  emit("    comisd %%xmm1, %%xmm0\n    setb %%al\n    movzbq %%al, %%rax\n");
@@ -927,7 +1006,19 @@ static void gen_stmt(stmt_t *s) {
                 if (s->init) gen_expr(s->init);
                 else emit("    pxor %%xmm0, %%xmm0\n");
                 int off = local_add_ex(s->name, s->name_len, 0, 1, 1);
-                emit("    movsd %%xmm0, %d(%%rbp)\n", off);
+                int fs = float_type_size(&s->type);
+                {
+                    int li = find_local(s->name, s->name_len);
+                    g_locals[li].size = type_size(&s->type);
+                    g_locals[li].is_unsigned = type_is_unsigned(&s->type);
+                    g_locals[li].float_size = fs;
+                }
+                if (fs == 4) {
+                    emit("    cvtsd2ss %%xmm0, %%xmm1\n");
+                    emit("    movss %%xmm1, %d(%%rbp)\n", off);
+                } else {
+                    emit("    movsd %%xmm0, %d(%%rbp)\n", off);
+                }
             } else {
                 if (s->init) gen_expr(s->init);
                 else emit("    movq $0, %%rax\n");
@@ -936,6 +1027,7 @@ static void gen_stmt(stmt_t *s) {
                     int li = find_local(s->name, s->name_len);
                     g_locals[li].size = type_size(&s->type);
                     g_locals[li].is_unsigned = type_is_unsigned(&s->type);
+                    if (is_f) g_locals[li].float_size = float_type_size(&s->type);
                     if (is_rng) {
                         g_locals[li].is_range       = 1;
                         g_locals[li].range_lo       = s->type.range_lo;
@@ -1049,7 +1141,7 @@ static void gen_stmt(stmt_t *s) {
                 emit("    movq $%lld, %d(%%rbp)\n", (long long)v->ival, off + 8);
             } else if (v->kind == EX_FLOAT) {
                 g_locals[i].cont_type = 3;
-                int id = float_add(v->fval);
+                int id = float_add(v->fval, 8);
                 emit("    movq $3, %d(%%rbp)\n", off);
                 emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id);
                 emit("    movsd %%xmm0, %d(%%rbp)\n", off + 8);
