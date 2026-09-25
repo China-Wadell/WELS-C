@@ -28,7 +28,7 @@ WELS-C 是 Wadell ES 生态的编程语言层。它采用中英双关键字，�
 
 ## 当前状态
 
-**版本：`a0.0.52`** —— -target wels，打印走 runtime
+**版本：`a0.0.53`** —— stdlib 起步
 
 ### 已实现
 
@@ -65,6 +65,8 @@ WELS-C 是 Wadell ES 生态的编程语言层。它采用中英双关键字，�
 - ✅ Windows 目标（Windows x64 ABI）
 - ✅ runtime 联调通过（不依赖 libc）
 - ✅ `-target wels`：`打印` 自动走 runtime（不依赖 libc）
+- ✅ `-I dir`：头文件/模块搜索路径
+- ✅ stdlib 起步（`io.weh`）
 
 ### 部分实现
 
@@ -89,7 +91,7 @@ WELS-C/
 │   ├── Makefile
 │   └── run_tests.sh
 ├── runtime/            WELS-C 运行时（最小版）
-├── stdlib/             标准库（待开发）
+├── stdlib/             标准库（io 起步）
 ├── tools/              工具链（待开发）
 ├── editor/             编辑器支持（待开发）
 └── include/            公共头文件（待开发）
@@ -283,6 +285,7 @@ x86-64 汇编 (.s)
 - [x] `a0.0.50` —— 结构体嵌套字段
 - [x] `a0.0.51` —— runtime 联调通过（不依赖 libc）
 - [x] `a0.0.52` —— -target wels，打印走 runtime
+- [x] `a0.0.53` —— stdlib 起步（io.weh）+ -I 搜索路径修复
 
 ### 计划中
 
