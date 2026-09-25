@@ -5,6 +5,24 @@ static int   g_label = 0;
 static int   g_str_id = 0;
 static int   g_target_windows = 0;
 static int   g_cur_line = 0;
+
+#define MAX_FUNC_SIGS 64
+typedef struct {
+    const char *name; int len;
+    int is_float_ret;
+    int nparams;
+    int param_is_float[8];
+} func_sig_t;
+static func_sig_t g_func_sigs[MAX_FUNC_SIGS];
+static int        g_nfunc_sigs = 0;
+
+static func_sig_t *find_func_sig(const char *name, int len) {
+    for (int i = 0; i < g_nfunc_sigs; i++)
+        if (g_func_sigs[i].len == len &&
+            memcmp(g_func_sigs[i].name, name, len) == 0)
+            return &g_func_sigs[i];
+    return 0;
+}
 static program_t *g_prog = 0;
 
 #define MAX_LOOPS 64
@@ -294,8 +312,36 @@ static void gen_call(expr_t *e) {
     static const char *regs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     static const char *regs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
     const char **regs = g_target_windows ? regs_windows : regs_linux;
-    for (int i = n - 1; i >= 0; i--) { gen_expr(e->args[i]); emit("    push %%rax\n"); }
-    for (int i = 0; i < n && i < 6; i++) emit("    pop %s\n", regs[i]);
+    func_sig_t *sig = find_func_sig(fn, fnlen);
+
+    /* 参数求值入栈暂存（从右到左） */
+    for (int i = n - 1; i >= 0; i--) {
+        int is_f = (sig && i < sig->nparams) ? sig->param_is_float[i]
+                                             : expr_is_float(e->args[i]);
+        gen_expr(e->args[i]);
+        if (is_f) {
+            emit("    sub $8, %%rsp\n");
+            emit("    movsd %%xmm0, (%%rsp)\n");
+        } else {
+            emit("    push %%rax\n");
+        }
+    }
+
+    /* 从左到右 pop 到对应寄存器 */
+    int int_idx = 0, float_idx = 0;
+    for (int i = 0; i < n; i++) {
+        int is_f = (sig && i < sig->nparams) ? sig->param_is_float[i]
+                                             : expr_is_float(e->args[i]);
+        if (is_f) {
+            emit("    movsd (%%rsp), %%xmm%d\n", float_idx);
+            emit("    add $8, %%rsp\n");
+            float_idx++;
+        } else {
+            emit("    pop %s\n", regs[int_idx]);
+            int_idx++;
+        }
+    }
+
     emit("    movl $0, %%eax\n    call %.*s\n", fnlen, fn);
 }
 
@@ -457,6 +503,18 @@ static void gen_expr(expr_t *e) {
                 int li = find_local(e->left->name, e->left->name_len);
                 int gi = (li < 0) ? find_global(e->left->name, e->left->name_len) : -1;
                 if (li < 0 && gi < 0) { fprintf(stderr, "错误: 未声明的变量\n"); exit(1); }
+
+                /* 右值是返回浮点的函数调用 */
+                if (e->right->kind == EX_CALL) {
+                    func_sig_t *sig = find_func_sig(e->right->operand->name,
+                                                     e->right->operand->name_len);
+                    if (sig && sig->is_float_ret) {
+                        gen_expr(e->right);
+                        if (li >= 0) emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
+                        else         emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
+                        break;
+                    }
+                }
 
                 /* 复合赋值 */
                 if (e->op_len >= 2 && e->op_text[e->op_len-1] == '=' &&
@@ -829,6 +887,16 @@ static void gen_stmt(stmt_t *s) {
 }
 
 static void gen_func(func_t *f) {
+    if (g_nfunc_sigs < MAX_FUNC_SIGS) {
+        func_sig_t *sig = &g_func_sigs[g_nfunc_sigs];
+        sig->name = f->name;
+        sig->len = f->name_len;
+        sig->is_float_ret = f->has_ret && is_float_type(&f->ret_type);
+        sig->nparams = f->nparams > 8 ? 8 : f->nparams;
+        for (int i = 0; i < sig->nparams; i++)
+            sig->param_is_float[i] = is_float_type(&f->params[i].type);
+        g_nfunc_sigs++;
+    }
     g_nlocals = 0; g_stack_used = 0;
     const char *name = f->name;
     int nlen = f->name_len;
@@ -847,9 +915,17 @@ static void gen_func(func_t *f) {
     static const char *pregs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     static const char *pregs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
     const char **pregs = g_target_windows ? pregs_windows : pregs_linux;
+    int int_idx = 0, float_idx = 0;
     for (int i = 0; i < f->nparams && i < 6; i++) {
-        int off = local_add(f->params[i].name, f->params[i].name_len);
-        emit("    movq %s, %d(%%rbp)\n", pregs[i], off);
+        int off = local_add_ex(f->params[i].name, f->params[i].name_len,
+                               0, 1, is_float_type(&f->params[i].type));
+        if (is_float_type(&f->params[i].type)) {
+            emit("    movsd %%xmm%d, %d(%%rbp)\n", float_idx, off);
+            float_idx++;
+        } else {
+            emit("    movq %s, %d(%%rbp)\n", pregs[int_idx], off);
+            int_idx++;
+        }
     }
     gen_stmt(f->body);
     emit("    movq $0, %%rax\n    leave\n    ret\n");
