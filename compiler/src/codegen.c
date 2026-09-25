@@ -1286,12 +1286,19 @@ static void gen_expr(expr_t *e) {
                 emit("    movq %%rax, (%%rcx)\n");
             }
             else if (e->left->kind == EX_INDEX) {
+                /* 数组写：按 elem_size 选指令 */
+                int es = index_elem_size(e->left->left);
                 gen_expr(e->left->left);
                 emit("    push %%rax\n");
                 gen_expr(e->left->right);
                 emit("    push %%rax\n");
                 gen_expr(e->right);
-                emit("    pop %%rcx\n    pop %%rdx\n    movq %%rax, (%%rdx, %%rcx, 8)\n");
+                emit("    pop %%rcx\n    pop %%rdx\n");
+                const char *sc = scale_from_elem(es);
+                if      (es == 1) emit("    movb %%al, (%%rdx, %%rcx, %s)\n", sc);
+                else if (es == 2) emit("    movw %%ax, (%%rdx, %%rcx, %s)\n", sc);
+                else if (es == 4) emit("    movl %%eax, (%%rdx, %%rcx, %s)\n", sc);
+                else              emit("    movq %%rax, (%%rdx, %%rcx, %s)\n", sc);
             }
             break;
         }
