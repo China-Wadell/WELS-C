@@ -60,6 +60,34 @@ void wels_print_float(double d) {
     }
 }
 
+/* ---------- 字符串操作 ---------- */
+
+unsigned long wels_strlen(const char *s) {
+    unsigned long n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+int wels_strcmp(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+/* 复制 src 到 dst，返回 dst。dst 必须有足够空间。 */
+char *wels_strcpy(char *dst, const char *src) {
+    char *p = dst;
+    while ((*p++ = *src++)) ;
+    return dst;
+}
+
+/* 把 src 追加到 dst 末尾，返回 dst。dst 必须有足够空间。 */
+char *wels_strcat(char *dst, const char *src) {
+    char *p = dst;
+    while (*p) p++;
+    while ((*p++ = *src++)) ;
+    return dst;
+}
+
 void wels_exit(int code) {
     sys_exit(code);
 }
