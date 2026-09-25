@@ -84,6 +84,7 @@ typedef struct {
     int size;
     int is_unsigned;
     int float_size;   /* 4 或 8，仅 is_float 时有效 */
+    int is_ref;       /* 引用 */
 } local_t;
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
@@ -122,6 +123,7 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].size = 8;
     g_locals[g_nlocals].is_unsigned = 0;
     g_locals[g_nlocals].float_size = 0;
+    g_locals[g_nlocals].is_ref = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -408,6 +410,28 @@ static void gen_load_var(const char *name, int len) {
     int li = find_local(name, len);
     if (li >= 0) {
         if (g_locals[li].is_array)      emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset);
+        else if (g_locals[li].is_ref) {
+            emit("    movq %d(%%rbp), %%rax\n", g_locals[li].offset);
+            if (g_locals[li].is_float) {
+                if (g_locals[li].float_size == 4) {
+                    emit("    movss (%%rax), %%xmm1\n");
+                    emit("    cvtss2sd %%xmm1, %%xmm0\n");
+                } else {
+                    emit("    movsd (%%rax), %%xmm0\n");
+                }
+            } else if (g_locals[li].size == 1) {
+                if (g_locals[li].is_unsigned) emit("    movzbq (%%rax), %%rax\n");
+                else                          emit("    movsbq (%%rax), %%rax\n");
+            } else if (g_locals[li].size == 2) {
+                if (g_locals[li].is_unsigned) emit("    movzwq (%%rax), %%rax\n");
+                else                          emit("    movswq (%%rax), %%rax\n");
+            } else if (g_locals[li].size == 4) {
+                if (g_locals[li].is_unsigned) emit("    movl (%%rax), %%eax\n");
+                else                          emit("    movslq (%%rax), %%rax\n");
+            } else {
+                emit("    movq (%%rax), %%rax\n");
+            }
+        }
         else if (g_locals[li].is_float) {
             if (g_locals[li].float_size == 4) {
                 emit("    movss %d(%%rbp), %%xmm1\n", g_locals[li].offset);
@@ -790,6 +814,29 @@ static void gen_expr(expr_t *e) {
                 int gi = (li < 0) ? find_global(e->left->name, e->left->name_len) : -1;
                 if (li < 0 && gi < 0) { fprintf(stderr, "错误: 未声明的变量\n"); exit(1); }
 
+                /* 左侧是引用：写到被引用变量 */
+                if (li >= 0 && g_locals[li].is_ref) {
+                    gen_expr(e->right);
+                    emit("    movq %d(%%rbp), %%rcx\n", g_locals[li].offset);
+                    if (g_locals[li].is_float) {
+                        if (g_locals[li].float_size == 4) {
+                            emit("    cvtsd2ss %%xmm0, %%xmm1\n");
+                            emit("    movss %%xmm1, (%%rcx)\n");
+                        } else {
+                            emit("    movsd %%xmm0, (%%rcx)\n");
+                        }
+                    } else if (g_locals[li].size == 1) {
+                        emit("    movb %%al, (%%rcx)\n");
+                    } else if (g_locals[li].size == 2) {
+                        emit("    movw %%ax, (%%rcx)\n");
+                    } else if (g_locals[li].size == 4) {
+                        emit("    movl %%eax, (%%rcx)\n");
+                    } else {
+                        emit("    movq %%rax, (%%rcx)\n");
+                    }
+                    break;
+                }
+
                 /* 右值是返回浮点的函数调用 */
                 if (e->right->kind == EX_CALL) {
                     func_sig_t *sig = find_func_sig(e->right->operand->name,
@@ -1077,6 +1124,32 @@ static void gen_stmt(stmt_t *s) {
     switch (s->kind) {
         case ST_LET: {
             if (s->type.is_static) break;
+
+            /* 引用声明：b 为 引用 a; */
+            if (s->type.is_ref && s->init && s->init->kind == EX_IDENT) {
+                int tli = find_local(s->init->name, s->init->name_len);
+                int tgi = (tli < 0) ? find_global(s->init->name, s->init->name_len) : -1;
+                if (tli < 0 && tgi < 0) {
+                    fprintf(stderr, "%d: 错误: 被引用变量 %.*s 未声明\n",
+                            g_cur_line, s->init->name_len, s->init->name);
+                    exit(1);
+                }
+                if (tli >= 0) emit("    lea %d(%%rbp), %%rax\n", g_locals[tli].offset);
+                else          emit("    lea g%d(%%rip), %%rax\n", g_globals[tgi].id);
+
+                int off = local_add(s->name, s->name_len);
+                int li = find_local(s->name, s->name_len);
+                g_locals[li].is_ref = 1;
+                g_locals[li].size = 8;
+                if (tli >= 0) {
+                    g_locals[li].is_float    = g_locals[tli].is_float;
+                    g_locals[li].float_size  = g_locals[tli].float_size;
+                    g_locals[li].is_unsigned = g_locals[tli].is_unsigned;
+                    g_locals[li].size        = g_locals[tli].size;
+                }
+                emit("    movq %%rax, %d(%%rbp)\n", off);
+                break;
+            }
 
             /* 修改 + 改类型 */
             if (s->modify_retype) {

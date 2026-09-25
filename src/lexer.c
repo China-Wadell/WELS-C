@@ -50,7 +50,7 @@ static const kw_entry_t g_kws[] = {
     { "enum", 4, KW_ENUM }, { "枚举", 6, KW_ENUM },
 
     /* 函数 */
-    { "fn", 2, KW_FN }, { "函", 3, KW_FN },
+    { "fn", 2, KW_FN }, { "函", 3, KW_FN }, { "函数", 6, KW_FN },
 
     /* 类型转换 */
     { "convert", 7, KW_CONVERT }, { "转化为", 9, KW_CONVERT },
