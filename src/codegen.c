@@ -284,6 +284,15 @@ static int expr_is_float(expr_t *e) {
         }
         case EX_BINARY: return expr_is_float(e->left) || expr_is_float(e->right);
         case EX_UNARY:  return expr_is_float(e->operand);
+        case EX_MEMBER: {
+            if (e->left->kind != EX_IDENT) return 0;
+            int gi = find_global(e->left->name, e->left->name_len);
+            if (gi < 0 || !g_globals[gi].is_struct_inst) return 0;
+            struct_def_t *sd = &g_prog->structs[g_globals[gi].struct_idx];
+            int fi = find_struct_field(sd, e->name, e->name_len);
+            if (fi < 0) return 0;
+            return is_float_type(&sd->fields[fi].type);
+        }
         default: return 0;
     }
 }
@@ -632,8 +641,13 @@ static void gen_expr(expr_t *e) {
             struct_def_t *sd = &g_prog->structs[g_globals[gi].struct_idx];
             int fi = find_struct_field(sd, e->name, e->name_len);
             if (fi < 0) { fprintf(stderr, "错误: 结构无字段 %.*s\n", e->name_len, e->name); exit(1); }
-            emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
-            emit("    mov %d(%%rax), %%rax\n", sd->fields[fi].offset);
+            if (is_float_type(&sd->fields[fi].type)) {
+                emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
+                emit("    movsd %d(%%rax), %%xmm0\n", sd->fields[fi].offset);
+            } else {
+                emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
+                emit("    mov %d(%%rax), %%rax\n", sd->fields[fi].offset);
+            }
             break;
         }
         case EX_TYPED:
