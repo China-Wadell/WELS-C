@@ -651,6 +651,7 @@ static void gen_stmt(stmt_t *s) {
             break;
         }
         case ST_FOR: {
+            int saved = g_nlocals;
             int L_top = new_label(), L_step = new_label(), L_end = new_label();
             if (s->for_init) gen_stmt(s->for_init);
             emit(".L%d:\n", L_top);
@@ -666,9 +667,15 @@ static void gen_stmt(stmt_t *s) {
             emit(".L%d:\n", L_step);
             if (s->for_step) gen_expr(s->for_step);
             emit("    jmp .L%d\n.L%d:\n", L_top, L_end);
+            g_nlocals = saved;
             break;
         }
-        case ST_BLOCK: for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]); break;
+        case ST_BLOCK: {
+            int saved = g_nlocals;
+            for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]);
+            g_nlocals = saved;
+            break;
+        }
         case ST_MATCH: {
             int L_end = new_label();
             int *L_case = malloc(sizeof(int) * (s->ncases + 1));
