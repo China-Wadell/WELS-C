@@ -645,6 +645,9 @@ static void gen_call(expr_t *e) {
                 if (g_target_windows) { emit("    mov %%rax, %%rdx\n    lea .Lfmt_s(%%rip), %%rcx\n"); }
                 else                  { emit("    mov %%rax, %%rsi\n    lea .Lfmt_s(%%rip), %%rdi\n"); }
                 emit("    movl $0, %%eax\n");
+            } else if (e->args[i]->kind == EX_INT && e->args[i]->is_empty) {
+                fprintf(stderr, "%d: 错误: 不能直接打印 ∅（要用 \"∅\"）\n", g_cur_line);
+                exit(1);
             } else {
                 int is_u = expr_is_unsigned(e->args[i]);
                 const char *fmt = is_u ? ".Lfmt_u" : ".Lfmt_d";

@@ -35,6 +35,7 @@ typedef struct expr {
     struct expr **args; int nargs;
     type_desc_t typed_type;
     int is_postfix;
+    int is_empty;
 } expr_t;
 
 typedef enum {

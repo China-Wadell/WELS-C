@@ -227,6 +227,7 @@ static int parse_primary(parser_t *P, expr_t **out) {
         expr_t *e = new_expr(EX_INT);
         e->line = P->cur.line; e->col = P->cur.col;
         e->ival = 0;
+        e->is_empty = 1;
         p_advance(P); *out = e; return 0;
     }
     if (P->cur.kind == TOK_CHAR) {
@@ -1138,6 +1139,14 @@ static int parse_let(parser_t *P, stmt_t **out) {
     if (was_const) {
         s->type.is_const  = 1;
         s->type.is_static = 1;
+    }
+
+    /* 常量值不能为 ∅ */
+    if (was_const) {
+        p_peek(P);
+        if (is_kw(P, KW_EMPTY)) {
+            return p_err(P, "常量不能为 ∅");
+        }
     }
 
     /* 区间边界 */

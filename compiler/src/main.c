@@ -148,6 +148,14 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
         char c = src[i];
 
         if (at_line_start && c == '#') {
+            /* #编示 once / #pragma once —— 识别后忽略（去重已自动生效） */
+            if (starts_with(src + i, len - i, "#编示") ||
+                starts_with(src + i, len - i, "#pragma")) {
+                i = skip_to_eol(src, len, i);
+                at_line_start = 1;
+                continue;
+            }
+
             /* #导入<path 模块名> / #import<path name> */
             if (starts_with(src + i, len - i, "#导入<") ||
                 starts_with(src + i, len - i, "#import<")) {
