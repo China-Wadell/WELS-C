@@ -86,6 +86,7 @@ typedef struct {
     const char *name; int name_len;
     int offset;
     type_desc_t type;
+    int struct_idx;
 } struct_field_t;
 
 typedef struct {

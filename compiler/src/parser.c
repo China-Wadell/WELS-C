@@ -21,6 +21,19 @@ typedef struct {
 static alias_entry_t g_type_aliases[MAX_ALIASES];
 static int g_naliases = 0;
 
+program_t *g_parser_prog = 0;
+
+
+static int lookup_struct_idx(const char *name, int len) {
+    if (!g_parser_prog) return -1;
+    for (int i = 0; i < g_parser_prog->nstructs; i++) {
+        if (g_parser_prog->structs[i].name_len == len &&
+            memcmp(g_parser_prog->structs[i].name, name, len) == 0)
+            return i;
+    }
+    return -1;
+}
+
 static int parse_expr(parser_t *P, expr_t **out);
 static int parse_block(parser_t *P, stmt_t **out);
 static int parse_stmt(parser_t *P, stmt_t **out);
@@ -683,6 +696,7 @@ static int parse_struct(parser_t *P, struct_def_t *sd, int is_union) {
     if (!is_punct(P, ')')) {
         for (;;) {
             int fi = sd->nfields;
+            sd->fields[fi].struct_idx = -1;
             if (mixed) {
                 type_desc_t ft;
                 if (parse_type(P, &ft) < 0) return -1;
@@ -690,6 +704,7 @@ static int parse_struct(parser_t *P, struct_def_t *sd, int is_union) {
                 sd->fields[fi].name = P->cur.start;
                 sd->fields[fi].name_len = P->cur.len;
                 sd->fields[fi].type = ft;
+                sd->fields[fi].struct_idx = lookup_struct_idx(ft.base, ft.base_len);
                 sd->fields[fi].offset = is_union ? 0 : fi * 8;
                 sd->nfields++;
                 p_advance(P);
@@ -730,6 +745,13 @@ static int parse_struct(parser_t *P, struct_def_t *sd, int is_union) {
             } else if (P->cur.kind == TOK_STRING) {
                 sd->inst_init[idx][fi] = 0;
                 sd->inst_str[idx][fi] = P->cur.start;
+                sd->inst_str_len[idx][fi] = P->cur.len;
+                fi++;
+                p_advance(P);
+            } else if (P->cur.kind == TOK_IDENT) {
+                /* 结构体嵌套：引用了另一个实例，记下来 */
+                sd->inst_init[idx][fi] = 0;
+                sd->inst_str[idx][fi] = P->cur.start;    /* 借用 str 字段存实例名 */
                 sd->inst_str_len[idx][fi] = P->cur.len;
                 fi++;
                 p_advance(P);
@@ -1499,6 +1521,7 @@ static int parse_func(parser_t *P, func_t **out) {
 }
 
 int parse_program(lexer_t *L, program_t *out) {
+    g_parser_prog = out;
     parser_t P;
     memset(&P, 0, sizeof(P));
     P.L = L;

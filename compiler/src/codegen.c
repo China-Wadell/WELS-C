@@ -423,6 +423,64 @@ static void emit_store_var(int li, int gi, __attribute__((unused)) const char *r
     }
 }
 
+/* 把左值的地址生成到 %rax */
+static void gen_addr(expr_t *e) {
+    if (!e) return;
+    switch (e->kind) {
+        case EX_IDENT: {
+            int li = find_local(e->name, e->name_len);
+            if (li >= 0) { emit("    lea %d(%%rbp), %%rax\n", g_locals[li].offset); return; }
+            int gi = find_global(e->name, e->name_len);
+            if (gi >= 0) { emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id); return; }
+            fprintf(stderr, "%d: 错误: 未声明的变量 %.*s\n", g_cur_line, e->name_len, e->name);
+            exit(1);
+        }
+        case EX_MEMBER: {
+            gen_addr(e->left);
+            /* 从 e->left 的结构体定义里找 e->name 的偏移 */
+            int off = -1;
+            /* left 是结构体类型 → 需要先知道它的 struct_idx */
+            /* 简化：从 e 自身携带的 struct_idx 反查不行，
+               改为：先在"当前 left 的类型"里找字段偏移 */
+            int left_si = -1;
+            if (e->left->kind == EX_IDENT) {
+                int gi = find_global(e->left->name, e->left->name_len);
+                if (gi >= 0 && g_globals[gi].is_struct_inst)
+                    left_si = g_globals[gi].struct_idx;
+            }
+            /* 若 left 本身也是 MEMBER，递归查找它的类型 */
+            if (left_si < 0 && e->left->kind == EX_MEMBER) {
+                /* 在某个结构体里找 left->name 字段的 struct_idx */
+                for (int si = 0; si < g_prog->nstructs && left_si < 0; si++) {
+                    struct_def_t *sd = &g_prog->structs[si];
+                    for (int k = 0; k < sd->nfields; k++) {
+                        if (sd->fields[k].name_len == e->left->name_len &&
+                            memcmp(sd->fields[k].name, e->left->name, e->left->name_len) == 0) {
+                            left_si = sd->fields[k].struct_idx;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (left_si < 0) { fprintf(stderr, "错误: 字段嵌套错误\n"); exit(1); }
+            struct_def_t *lsd = &g_prog->structs[left_si];
+            for (int k = 0; k < lsd->nfields; k++) {
+                if (lsd->fields[k].name_len == e->name_len &&
+                    memcmp(lsd->fields[k].name, e->name, e->name_len) == 0) {
+                    off = lsd->fields[k].offset;
+                    break;
+                }
+            }
+            if (off < 0) { fprintf(stderr, "错误: 无字段 %.*s\n", e->name_len, e->name); exit(1); }
+            if (off) emit("    add $%d, %%rax\n", off);
+            return;
+        }
+        default:
+            fprintf(stderr, "%d: 错误: 不能取地址\n", g_cur_line);
+            exit(1);
+    }
+}
+
 static void gen_load_var(const char *name, int len) {
     int li = find_local(name, len);
     if (li >= 0) {
@@ -554,7 +612,34 @@ static void emit_globals(void) {
                     emit("    .quad %lld\n", (long long)sd->inst_init[inst][0]);
             } else {
                 for (int k = 0; k < sd->nfields; k++) {
-                    if (sd->inst_str[inst][k])
+                    /* 嵌套结构体字段：inst_str 存的是"引用的实例名"，把那个实例的数据复制过来 */
+                    if (sd->fields[k].struct_idx >= 0 && sd->inst_str[inst][k]) {
+                        const char *refname = sd->inst_str[inst][k];
+                        int reflen = sd->inst_str_len[inst][k];
+                        int found = -1;
+                        for (int gg = 0; gg < g_nglobals; gg++) {
+                            if (g_globals[gg].is_struct_inst &&
+                                g_globals[gg].len == reflen &&
+                                memcmp(g_globals[gg].name, refname, reflen) == 0) {
+                                found = gg; break;
+                            }
+                        }
+                        if (found >= 0) {
+                            struct_def_t *rsd = &g_prog->structs[g_globals[found].struct_idx];
+                            int ri = g_globals[found].inst_idx;
+                            for (int rk = 0; rk < rsd->nfields; rk++) {
+                                if (rsd->inst_str[ri][rk])
+                                    emit("    .quad .Lstr%d\n", str_add(rsd->inst_str[ri][rk],
+                                                                          rsd->inst_str_len[ri][rk]));
+                                else
+                                    emit("    .quad %lld\n", (long long)rsd->inst_init[ri][rk]);
+                            }
+                        } else {
+                            for (int rk = 0; rk < g_prog->structs[sd->fields[k].struct_idx].nfields; rk++)
+                                emit("    .quad 0\n");
+                        }
+                    }
+                    else if (sd->inst_str[inst][k])
                         emit("    .quad .Lstr%d\n", str_add(sd->inst_str[inst][k],
                                                               sd->inst_str_len[inst][k]));
                     else
@@ -752,22 +837,24 @@ static void gen_expr(expr_t *e) {
         case EX_STRING: { int id = str_add(e->name, e->name_len); emit("    lea .Lstr%d(%%rip), %%rax\n", id); break; }
         case EX_IDENT: gen_load_var(e->name, e->name_len); break;
         case EX_MEMBER: {
-            if (e->left->kind != EX_IDENT) { fprintf(stderr, "错误: . 左边须是实例名\n"); exit(1); }
-            int gi = find_global(e->left->name, e->left->name_len);
-            if (gi < 0 || !g_globals[gi].is_struct_inst) {
-                fprintf(stderr, "错误: 未声明的实例 %.*s\n", e->left->name_len, e->left->name);
-                exit(1);
+            /* 查最终字段是否浮点 */
+            int is_f = 0;
+            int fi_found = 0;
+            /* 直接按"当前字段名"在整个项目里找浮点判断 */
+            for (int si = 0; si < g_prog->nstructs && !fi_found; si++) {
+                struct_def_t *sd = &g_prog->structs[si];
+                for (int k = 0; k < sd->nfields; k++) {
+                    if (sd->fields[k].name_len == e->name_len &&
+                        memcmp(sd->fields[k].name, e->name, e->name_len) == 0) {
+                        is_f = is_float_type(&sd->fields[k].type);
+                        fi_found = 1;
+                        break;
+                    }
+                }
             }
-            struct_def_t *sd = &g_prog->structs[g_globals[gi].struct_idx];
-            int fi = find_struct_field(sd, e->name, e->name_len);
-            if (fi < 0) { fprintf(stderr, "错误: 结构无字段 %.*s\n", e->name_len, e->name); exit(1); }
-            if (is_float_type(&sd->fields[fi].type)) {
-                emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
-                emit("    movsd %d(%%rax), %%xmm0\n", sd->fields[fi].offset);
-            } else {
-                emit("    lea g%d(%%rip), %%rax\n", g_globals[gi].id);
-                emit("    mov %d(%%rax), %%rax\n", sd->fields[fi].offset);
-            }
+            gen_addr(e);
+            if (is_f) emit("    movsd (%%rax), %%xmm0\n");
+            else      emit("    mov (%%rax), %%rax\n");
             break;
         }
         case EX_TYPED:
