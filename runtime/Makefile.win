@@ -1,0 +1,13 @@
+.RECIPEPREFIX = >
+CC = gcc
+CFLAGS = -c -O2
+
+all: wels_rt_win.o
+
+wels_rt_win.o: wels_rt_win.c
+> $(CC) $(CFLAGS) wels_rt_win.c -o wels_rt_win.o
+
+clean:
+> rm -f wels_rt_win.o
+
+.PHONY: all clean

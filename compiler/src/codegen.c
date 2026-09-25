@@ -1886,7 +1886,11 @@ int codegen_program(program_t *p, const char *out_path) {
 
     emit_strings();
     emit_floats();
-    emit("    .section .note.GNU-stack,\"\",@progbits\n\n");
+    /* 只有 Linux 目标才输出 .note.GNU-stack */
+    if (!g_target_windows) {
+        emit("    .section .note.GNU-stack,\"\",@progbits\n\n");
+    }
+    emit("\n");
     fclose(g_out); g_out = 0;
     return 0;
 }

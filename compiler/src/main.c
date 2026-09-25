@@ -414,12 +414,18 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "-target") == 0 && i + 1 < argc) {
-            if (strcmp(argv[i+1], "wels") == 0) {
+            if (strcmp(argv[i+1], "windows") == 0) {
+                codegen_set_target(1);
+            } else if (strcmp(argv[i+1], "wels") == 0) {
+                /* 向后兼容：-target wels = -target linux -runtime wels */
+                codegen_set_target(0);
                 codegen_set_wels(1);
             } else {
-                codegen_set_wels(0);
-                codegen_set_target(strcmp(argv[i+1], "windows") == 0);
+                codegen_set_target(0);
             }
+            i++;
+        } else if (strcmp(argv[i], "-runtime") == 0 && i + 1 < argc) {
+            codegen_set_wels(strcmp(argv[i+1], "wels") == 0);
             i++;
         } else if (strcmp(argv[i], "-D") == 0 && i + 1 < argc) {
             add_macro(argv[i+1], (int)strlen(argv[i+1]), "", 0);
@@ -476,7 +482,7 @@ int main(int argc, char **argv) {
     g_parse_category = 0;
 
     if (parse_program(&L, &prog) < 0) {
-        fprintf(stderr, "解析失败\n"); free(src); return 1;
+        fprintf(stderr, "parse failed\n"); free(src); return 1;
     }
 
     /* ===== 阶段 2：逐个解析模块，收集函数 ===== */
@@ -517,10 +523,10 @@ int main(int argc, char **argv) {
 
     /* ===== 阶段 3：codegen ===== */
     if (codegen_program(&prog, out_path) < 0) {
-        fprintf(stderr, "代码生成失败\n");
+        fprintf(stderr, "codegen failed\n");
         ast_free_program(&prog); free(src); return 1;
     }
-    printf("生成: %s\n", out_path);
+    printf("generated: %s\n", out_path);
     ast_free_program(&prog); free(src);
     return 0;
 }
