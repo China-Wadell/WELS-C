@@ -74,6 +74,12 @@ typedef enum {
     /* 模块 */
     KW_CALL,     /* 调用 / call */
     KW_IMPORT,   /* 导入 / import */
+
+    /* 类型别名 */
+    KW_ALIAS,    /* 别名 / alias */
+
+    /* 外部声明 */
+    KW_EXTERN,   /* 外来 / extern */
 } kw_id_t;
 
 typedef struct {

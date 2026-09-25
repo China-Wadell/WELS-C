@@ -9,6 +9,8 @@ typedef struct {
     const char *base; int base_len;
     int is_ptr, is_ref, is_array, is_range;
     int is_const, is_static, is_local, is_container;
+    int is_extern;
+    int is_unsigned;
     int64_t range_lo, range_hi;
     int range_lo_open, range_hi_open;
 } type_desc_t;

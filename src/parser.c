@@ -11,6 +11,16 @@ typedef struct {
     int      has_next;
 } parser_t;
 
+/* 类型别名表 */
+#define MAX_ALIASES 64
+typedef struct {
+    const char *name;
+    int name_len;
+    type_desc_t type;
+} alias_entry_t;
+static alias_entry_t g_type_aliases[MAX_ALIASES];
+static int g_naliases = 0;
+
 static int parse_expr(parser_t *P, expr_t **out);
 static int parse_block(parser_t *P, stmt_t **out);
 static int parse_stmt(parser_t *P, stmt_t **out);
@@ -109,11 +119,39 @@ static int parse_type(parser_t *P, type_desc_t *out) {
 
     /* 基础类型 */
     if (P->cur.kind == TOK_KEYWORD || P->cur.kind == TOK_IDENT) {
-        out->base = P->cur.start;
-        out->base_len = P->cur.len;
+        int matched = 0;
+        for (int i = 0; i < g_naliases; i++) {
+            if (g_type_aliases[i].name_len == P->cur.len &&
+                memcmp(g_type_aliases[i].name, P->cur.start, P->cur.len) == 0) {
+                type_desc_t a = g_type_aliases[i].type;
+                if (out->is_const)     a.is_const = 1;
+                if (out->is_static)    a.is_static = 1;
+                if (out->is_local)     a.is_local = 1;
+                if (out->is_container) a.is_container = 1;
+                *out = a;
+                matched = 1;
+                break;
+            }
+        }
+        if (!matched) {
+            out->base = P->cur.start;
+            out->base_len = P->cur.len;
+        }
         p_advance(P);
     } else {
         return p_err(P, "期望类型");
+    }
+
+    /* 无符 + 另一类型：无符 长整 / 无符 整数 / 无符 短整 */
+    if (out->base_len == 6 && memcmp(out->base, "无符", 6) == 0) {
+        p_peek(P);
+        if (P->cur.kind == TOK_KEYWORD || P->cur.kind == TOK_IDENT) {
+            /* 记下 无符，base 换成第二个 */
+            out->base = P->cur.start;
+            out->base_len = P->cur.len;
+            out->is_unsigned = 1;
+            p_advance(P);
+        }
     }
 
     /* 修饰后缀（可叠加） */
@@ -1467,6 +1505,25 @@ int parse_program(lexer_t *L, program_t *out) {
         }
         if (is_kw(&P, KW_ENUM)) {
             if (parse_enum(&P, out) < 0) return -1;
+            continue;
+        }
+        if (is_kw(&P, KW_ALIAS)) {
+            p_advance(&P);
+            if (P.cur.kind != TOK_IDENT) return p_err(&P, "期望别名");
+            const char *nm = P.cur.start;
+            int nml = P.cur.len;
+            p_advance(&P);
+            if (!is_kw(&P, KW_IS)) return p_err(&P, "期望 '为'");
+            p_advance(&P);
+            type_desc_t ty;
+            if (parse_type(&P, &ty) < 0) return -1;
+            if (expect_punct(&P, ';', "期望 ';'") < 0) return -1;
+            if (g_naliases < MAX_ALIASES) {
+                g_type_aliases[g_naliases].name = nm;
+                g_type_aliases[g_naliases].name_len = nml;
+                g_type_aliases[g_naliases].type = ty;
+                g_naliases++;
+            }
             continue;
         }
         if (is_kw(&P, KW_FN)) {

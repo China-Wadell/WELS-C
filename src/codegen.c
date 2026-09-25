@@ -198,6 +198,7 @@ static int type_size(type_desc_t *t) {
 }
 
 static int type_is_unsigned(type_desc_t *t) {
+    if (t->is_unsigned) return 1;
     const char *b = t->base; int l = t->base_len;
     if (l == 6 && memcmp(b, "无符", 6) == 0) return 1;
     if (l == 8 && memcmp(b, "unsigned", 8) == 0) return 1;
