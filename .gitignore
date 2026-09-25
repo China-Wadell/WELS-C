@@ -1,10 +1,15 @@
 # 编译产物
-wescc
-wescc.exe
-out.s
-test
-test.exe
 *.o
+*.s
+*.exe
+*.wes
+a.out
+
+# 各子项目产物
+compiler/wescc
+compiler/wescc.exe
+compiler/out.s
+compiler/test
 
 # 编辑器
 .vscode/

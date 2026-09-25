@@ -300,7 +300,11 @@ x86-64 汇编 (.s)
 
 ## 授权
 
-GPLv3
+**代码**（compiler/、runtime/、stdlib/、tools/）：GPLv3，见 [LICENSE](LICENSE)。
+
+**规范与文档**（WL-C26.md 及 docs/ 下的文档）：CC BY 4.0，见 [LICENSE-DOCS](LICENSE-DOCS)。
+
+[![CC BY 4.0](https://i.creativecommons.org/l/by/4.0/88x31.png)](http://creativecommons.org/licenses/by/4.0/)
 
 ---
 
