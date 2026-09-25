@@ -51,6 +51,7 @@ typedef struct {
     int is_float_ret;
     int nparams;
     int param_is_float[8];
+    int has_varargs;
 } func_sig_t;
 static func_sig_t g_func_sigs[MAX_FUNC_SIGS];
 static int        g_nfunc_sigs = 0;
@@ -660,6 +661,50 @@ static void gen_call(expr_t *e) {
     static const char *regs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
     const char **regs = g_target_windows ? regs_windows : regs_linux;
     func_sig_t *sig = find_func_sig(fn, fnlen);
+
+    /* 变长调用：打包变长参数 */
+    if (sig && sig->has_varargs) {
+        int fixed = sig->nparams;
+        if (fixed > n) fixed = n;   /* 防止实参少于固定参数 */
+
+        /* 从右到左全部入栈 */
+        for (int i = n - 1; i >= 0; i--) {
+            int is_f = (i < fixed) ? sig->param_is_float[i] : 0;
+            gen_expr(e->args[i]);
+            if (is_f) {
+                emit("    sub $8, %%rsp\n");
+                emit("    movsd %%xmm0, (%%rsp)\n");
+            } else {
+                emit("    push %%rax\n");
+            }
+        }
+
+        /* 前 fixed 个 pop 到寄存器 */
+        int fi_idx = 0, ff_idx = 0;
+        for (int i = 0; i < fixed; i++) {
+            if (sig->param_is_float[i]) {
+                emit("    movsd (%%rsp), %%xmm%d\n", ff_idx);
+                emit("    add $8, %%rsp\n");
+                ff_idx++;
+            } else {
+                emit("    pop %s\n", regs[fi_idx]);
+                fi_idx++;
+            }
+        }
+
+        /* 变长数组地址 = 当前 %rsp，放到下一个整数寄存器 */
+        if (fi_idx < 6) emit("    movq %%rsp, %s\n", regs[fi_idx]);
+
+        emit("    movl $0, %%eax\n");
+        emit("    call ");
+        emit_func_symbol(fn, fnlen);
+        emit("\n");
+
+        /* 恢复栈（变长参数部分） */
+        int extra = n - fixed;
+        if (extra > 0) emit("    add $%d, %%rsp\n", extra * 8);
+        return;
+    }
 
     /* 参数求值入栈暂存（从右到左） */
     for (int i = n - 1; i >= 0; i--) {
@@ -1512,6 +1557,7 @@ static void gen_func(func_t *f) {
         sig->len = f->name_len;
         sig->is_float_ret = f->has_ret && is_float_type(&f->ret_type);
         sig->nparams = f->nparams > 8 ? 8 : f->nparams;
+        sig->has_varargs = f->has_varargs;
         for (int i = 0; i < sig->nparams; i++)
             sig->param_is_float[i] = is_float_type(&f->params[i].type);
         g_nfunc_sigs++;
@@ -1538,6 +1584,7 @@ static void gen_func(func_t *f) {
     /* 动态栈帧大小：扫描 AST 算字节数，16 字节对齐 */
     int frame = scan_frame(f->body);
     frame += 8 * f->nparams;   /* 参数落栈 */
+    if (f->has_varargs) frame += 8;   /* 变长参数：参数数组地址 */
     frame = (frame + 15) & ~15;
     if (frame < 16) frame = 16;
     emit("    sub $%d, %%rsp\n", frame);
@@ -1554,6 +1601,18 @@ static void gen_func(func_t *f) {
         } else {
             emit("    movq %s, %d(%%rbp)\n", pregs[int_idx], off);
             int_idx++;
+        }
+    }
+
+    /* 变长参数：把数组地址寄存器存到 参数 变量 */
+    if (f->has_varargs) {
+        int voff = local_add_ex("参数", 6, 0, 1, 0);
+        int vli = find_local("参数", 6);
+        g_locals[vli].is_ptr = 1;
+        g_locals[vli].is_array = 0;
+        g_locals[vli].size = 8;
+        if (int_idx < 6) {
+            emit("    movq %s, %d(%%rbp)\n", pregs[int_idx], voff);
         }
     }
     gen_stmt(f->body);
