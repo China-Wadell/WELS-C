@@ -358,6 +358,40 @@ static int expr_is_string(expr_t *e) {
     return 0;
 }
 
+static void emit_store_var(int li, int gi, const char *reg) {
+    /* 按变量 size 存 %rax 或 %xmm0 到变量 */
+    if (li >= 0) {
+        int off = g_locals[li].offset;
+        if (g_locals[li].is_float) {
+            if (g_locals[li].float_size == 4) {
+                emit("    cvtsd2ss %%xmm0, %%xmm1\n");
+                emit("    movss %%xmm1, %d(%%rbp)\n", off);
+            } else {
+                emit("    movsd %%xmm0, %d(%%rbp)\n", off);
+            }
+        } else if (g_locals[li].size == 1) {
+            emit("    movb %%al, %d(%%rbp)\n", off);
+        } else if (g_locals[li].size == 2) {
+            emit("    movw %%ax, %d(%%rbp)\n", off);
+        } else if (g_locals[li].size == 4) {
+            emit("    movl %%eax, %d(%%rbp)\n", off);
+        } else {
+            emit("    movq %%rax, %d(%%rbp)\n", off);
+        }
+    } else if (gi >= 0) {
+        if (g_globals[gi].is_float) {
+            if (g_globals[gi].float_size == 4) {
+                emit("    cvtsd2ss %%xmm0, %%xmm1\n");
+                emit("    movss %%xmm1, g%d(%%rip)\n", g_globals[gi].id);
+            } else {
+                emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
+            }
+        } else {
+            emit("    movq %%rax, g%d(%%rip)\n", g_globals[gi].id);
+        }
+    }
+}
+
 static void gen_load_var(const char *name, int len) {
     int li = find_local(name, len);
     if (li >= 0) {
@@ -785,8 +819,7 @@ static void gen_expr(expr_t *e) {
                     else if (is_op_text(e->op_text, e->op_len, "^="))  emit("    xor %%rcx, %%rax\n");
                     else if (is_op_text(e->op_text, e->op_len, "<<=")) emit("    shl %%cl, %%rax\n");
                     else if (is_op_text(e->op_text, e->op_len, ">>=")) emit("    sar %%cl, %%rax\n");
-                    if (li >= 0) emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
-                    else         emit("    movq %%rax, g%d(%%rip)\n", g_globals[gi].id);
+                    emit_store_var(li, gi, "%%rax");
                     break;
                 }
 
@@ -818,7 +851,12 @@ static void gen_expr(expr_t *e) {
                             emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
                         }
                     }
-                    else                            emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
+                    else {
+                        if (g_locals[li].size == 1) emit("    movb %%al, %d(%%rbp)\n", g_locals[li].offset);
+                        else if (g_locals[li].size == 2) emit("    movw %%ax, %d(%%rbp)\n", g_locals[li].offset);
+                        else if (g_locals[li].size == 4) emit("    movl %%eax, %d(%%rbp)\n", g_locals[li].offset);
+                        else emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
+                    }
                 } else {
                     if (g_globals[gi].is_float) {
                         if (g_globals[gi].float_size == 4) {
@@ -1097,8 +1135,8 @@ static void gen_stmt(stmt_t *s) {
                         g_locals[li].range_hi_open  = s->type.range_hi_open;
                     }
                     if (is_pt) g_locals[li].is_ptr = 1;
+                    emit_store_var(li, -1, "%%rax");
                 }
-                emit("    movq %%rax, %d(%%rbp)\n", off);
             }
             break;
         }
