@@ -57,6 +57,13 @@ void wels_print_float(double d) {
     }
 }
 
+void wels_print_char(int c) {
+    char ch = (char)c;
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD w;
+    WriteFile(h, &ch, 1, &w, 0);
+}
+
 void wels_exit(int code) {
     ExitProcess((unsigned)code);
 }

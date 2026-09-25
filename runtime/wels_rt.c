@@ -112,6 +112,11 @@ unsigned long wels_heap_remaining(void) {
     return WELS_HEAP_SIZE - wels_heap_used;
 }
 
+void wels_print_char(int c) {
+    char ch = (char)c;
+    sys_write(1, &ch, 1);
+}
+
 void wels_exit(int code) {
     sys_exit(code);
 }
