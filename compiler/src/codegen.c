@@ -1031,7 +1031,18 @@ static void gen_expr(expr_t *e) {
                 if      (is_op_text(e->op_text, e->op_len, "-")) emit("    neg %%rax\n");
                 else if (is_op_text(e->op_text, e->op_len, "!")) emit("    test %%rax, %%rax\n    setz %%al\n    movzbq %%al, %%rax\n");
                 else if (is_op_text(e->op_text, e->op_len, "~")) emit("    not %%rax\n");
-                else if (is_op_text(e->op_text, e->op_len, "*")) emit("    mov (%%rax), %%rax\n");
+                else if (is_op_text(e->op_text, e->op_len, "*")) {
+                    /* * 解引用按 elem_size 选指令 */
+                    int es = 8, eu = 0;
+                    if (e->operand->kind == EX_IDENT) {
+                        int li = find_local(e->operand->name, e->operand->name_len);
+                        if (li >= 0) { es = g_locals[li].elem_size; eu = g_locals[li].elem_unsigned; }
+                    }
+                    if      (es == 1) emit("    %s (%%rax), %%rax\n", eu ? "movzbq" : "movsbq");
+                    else if (es == 2) emit("    %s (%%rax), %%rax\n", eu ? "movzwq" : "movswq");
+                    else if (es == 4) emit("    movslq (%%rax), %%rax\n");
+                    else              emit("    mov (%%rax), %%rax\n");
+                }
             }
             break;
         case EX_BINARY: {
@@ -1562,10 +1573,8 @@ static void gen_stmt(stmt_t *s) {
                         g_locals[li].range_is_float = s->type.range_is_float;
                     }
                     if (is_pt) g_locals[li].is_ptr = 1;
-                    if (is_pt || s->type.is_array) {
-                        g_locals[li].elem_size = base_type_size(&s->type);
-                        g_locals[li].elem_unsigned = type_is_unsigned(&s->type);
-                    }
+                    g_locals[li].elem_size = base_type_size(&s->type);
+                    g_locals[li].elem_unsigned = type_is_unsigned(&s->type);
                     if (is_func_ptr_type(&s->type)) {
                         g_locals[li].is_func_ptr = 1;
                         g_locals[li].is_ptr = 1;
