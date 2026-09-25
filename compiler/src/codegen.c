@@ -278,6 +278,9 @@ static int is_func_ptr_type(type_desc_t *t) {
 static int type_size(type_desc_t *t);
 
 static int base_type_size(type_desc_t *t) {
+    /* 字符串 = char *，元素是 char，1 字节 */
+    if (t->base_len == 9 && memcmp(t->base, "字符串", 9) == 0) return 1;
+    if (t->base_len == 6 && memcmp(t->base, "string", 6) == 0) return 1;
     type_desc_t tmp = *t;
     tmp.is_ptr = 0; tmp.is_array = 0; tmp.is_ref = 0;
     return type_size(&tmp);
@@ -1812,6 +1815,12 @@ static void gen_func(func_t *f) {
             emit("    movq %s, %d(%%rbp)\n", pregs[int_idx], off);
             int_idx++;
         }
+    }
+
+    /* 参数 elem_size 登记 */
+    for (int i = 0; i < f->nparams && i < 6; i++) {
+        int li = find_local(f->params[i].name, f->params[i].name_len);
+        if (li >= 0) g_locals[li].elem_size = base_type_size(&f->params[i].type);
     }
 
     /* 变长参数：把数组地址寄存器存到 参数 变量 */

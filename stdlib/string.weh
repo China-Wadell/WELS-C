@@ -1,12 +1,13 @@
 _注释_ string.weh — WELS-C 字符串库
 
-外来 函 wels_strlen (s: 字符串) -> 长整;
 外来 函 wels_strcmp (a: 字符串, b: 字符串) -> 整数;
-外来 函 wels_strcpy (dst: 字符串, src: 字符串) -> 字符串;
-外来 函 wels_strcat (dst: 字符串, src: 字符串) -> 字符串;
 
 函 长度 (s: 字符串) -> 长整 {
-    返 wels_strlen(s);
+    n 为 长整 0;
+    当 s[n] \= 0 {
+        n = n + 1;
+    }
+    返 n;
 }
 
 函 比较 (a: 字符串, b: 字符串) -> 整数 {
@@ -18,10 +19,36 @@ _注释_ string.weh — WELS-C 字符串库
     返 0;
 }
 
-函 复制 (dst: 字符串, src: 字符串) -> 字符串 {
-    返 wels_strcpy(dst, src);
+函 是否为空 (s: 字符串) -> 整数 {
+    若 s[0] == 0 { 返 1; }
+    返 0;
 }
 
-函 拼接 (dst: 字符串, src: 字符串) -> 字符串 {
-    返 wels_strcat(dst, src);
+函 字符查找 (s: 字符串, c: 整数) -> 长整 {
+    i 为 长整 0;
+    当 s[i] \= 0 {
+        若 s[i] == c { 返 i; }
+        i = i + 1;
+    }
+    返 0 - 1;
+}
+
+函 子串查找 (hay: 字符串, needle: 字符串) -> 长整 {
+    hn 为 长整 长度(hay);
+    nn 为 长整 长度(needle);
+    若 nn == 0 { 返 0; }
+    若 nn > hn { 返 0 - 1; }
+    i 为 长整 0;
+    循环 i 为 长整 0; i <= hn - nn; i = i + 1 {
+        j 为 长整 0;
+        found 为 整数 1;
+        循环 j 为 长整 0; j < nn; j = j + 1 {
+            若 hay[i + j] \= needle[j] {
+                found = 0;
+                跳;
+            }
+        }
+        若 found == 1 { 返 i; }
+    }
+    返 0 - 1;
 }

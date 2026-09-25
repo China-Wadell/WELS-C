@@ -28,7 +28,7 @@ WELS-C 是 Wadell ES 生态的编程语言层。它采用中英双关键字，�
 
 ## 当前状态
 
-**版本：`a0.0.58`** —— 数组按元素类型索引
+**版本：`a0.0.59`** —— string 补全
 
 ### 已实现
 
@@ -66,7 +66,8 @@ WELS-C 是 Wadell ES 生态的编程语言层。它采用中英双关键字，�
 - ✅ runtime 联调通过（不依赖 libc）
 - ✅ `-target wels`：`打印` 自动走 runtime（不依赖 libc）
 - ✅ `-I dir`：头文件/模块搜索路径
-- ✅ stdlib：`io.weh`、`math.weh`（补全）、`string.weh`、`mem.weh`
+- ✅ stdlib：`io.weh`、`math.weh`（补全）、`string.weh`（补全）、`mem.weh`
+- ✅ 字符串库纯 WELS-C 实现（长度/查找/子串）
 - ✅ 数组按元素类型索引（字符 1 字节 / 短整 2 字节 / 整数 8 字节）
 - ✅ `tools/welsc` 一键编译
 
@@ -293,6 +294,7 @@ x86-64 汇编 (.s)
 - [x] `a0.0.56` —— mem.weh 标准库（bump allocator）
 - [x] `a0.0.57` —— math.weh 补全（阶乘、素数、gcd、sqrt 等）
 - [x] `a0.0.58` —— 数组按元素类型索引（字符数组 1 字节步长）
+- [x] `a0.0.59` —— string.weh 补全（纯 WELS-C 实现）
 
 ### 计划中
 
