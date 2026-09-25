@@ -85,6 +85,7 @@ typedef struct {
     int is_unsigned;
     int float_size;   /* 4 或 8，仅 is_float 时有效 */
     int is_ref;       /* 引用 */
+    int is_func_ptr;  /* 函数指针 */
 } local_t;
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
@@ -124,6 +125,7 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].is_unsigned = 0;
     g_locals[g_nlocals].float_size = 0;
     g_locals[g_nlocals].is_ref = 0;
+    g_locals[g_nlocals].is_func_ptr = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -199,6 +201,15 @@ static int type_is_unsigned(type_desc_t *t) {
     const char *b = t->base; int l = t->base_len;
     if (l == 6 && memcmp(b, "无符", 6) == 0) return 1;
     if (l == 8 && memcmp(b, "unsigned", 8) == 0) return 1;
+    return 0;
+}
+
+static int is_func_ptr_type(type_desc_t *t) {
+    if (!t->is_ptr) return 0;
+    const char *b = t->base; int l = t->base_len;
+    if (l == 3 && memcmp(b, "函", 3) == 0) return 1;
+    if (l == 6 && memcmp(b, "函数", 6) == 0) return 1;
+    if (l == 2 && memcmp(b, "fn", 2) == 0) return 1;
     return 0;
 }
 
@@ -579,6 +590,35 @@ static void emit_func_symbol(const char *fn, int fnlen) {
 
 static void gen_call(expr_t *e) {
     int n = e->nargs;
+
+    /* 间接调用：(*f)(...) */
+    if (e->operand->kind == EX_UNARY &&
+        is_op_text(e->operand->op_text, e->operand->op_len, "*") &&
+        e->operand->operand->kind == EX_IDENT) {
+        const char *vn = e->operand->operand->name;
+        int vnl = e->operand->operand->name_len;
+        int vli = find_local(vn, vnl);
+        int vgi = (vli < 0) ? find_global(vn, vnl) : -1;
+        if (vli < 0 && vgi < 0) {
+            fprintf(stderr, "%d: 错误: 未声明的函数指针 %.*s\n", g_cur_line, vnl, vn);
+            exit(1);
+        }
+        static const char *regs_linux[]   = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+        static const char *regs_windows[] = {"%rcx", "%rdx", "%r8",  "%r9",  "%r10", "%r11"};
+        const char **regs = g_target_windows ? regs_windows : regs_linux;
+        for (int i = n - 1; i >= 0; i--) {
+            gen_expr(e->args[i]);
+            emit("    push %%rax\n");
+        }
+        for (int i = 0; i < n && i < 6; i++)
+            emit("    pop %s\n", regs[i]);
+        if (vli >= 0) emit("    movq %d(%%rbp), %%r11\n", g_locals[vli].offset);
+        else          emit("    movq g%d(%%rip), %%r11\n", g_globals[vgi].id);
+        emit("    movl $0, %%eax\n");
+        emit("    call *%%r11\n");
+        return;
+    }
+
     const char *fn = e->operand->name;
     int fnlen = e->operand->name_len;
     int is_print = (fnlen == 6 && memcmp(fn, "打印", 6) == 0) ||
@@ -962,8 +1002,17 @@ static void gen_expr(expr_t *e) {
             else if (e->left->kind == EX_UNARY &&
                      is_op_text(e->left->op_text, e->left->op_len, "*") &&
                      e->left->operand->kind == EX_IDENT) {
-                gen_expr(e->right);
                 int li2 = find_local(e->left->operand->name, e->left->operand->name_len);
+                /* 函数指针绑定：*f = 函数名; */
+                if (li2 >= 0 && g_locals[li2].is_func_ptr &&
+                    e->right->kind == EX_IDENT) {
+                    emit("    lea %.*s(%%rip), %%rax\n",
+                         e->right->name_len, e->right->name);
+                    emit("    movq %%rax, %d(%%rbp)\n", g_locals[li2].offset);
+                    break;
+                }
+                /* 普通指针解引用写 */
+                gen_expr(e->right);
                 if (li2 >= 0) {
                     emit("    movq %d(%%rbp), %%rcx\n", g_locals[li2].offset);
                 } else {
@@ -1225,6 +1274,11 @@ static void gen_stmt(stmt_t *s) {
                         g_locals[li].range_hi_open  = s->type.range_hi_open;
                     }
                     if (is_pt) g_locals[li].is_ptr = 1;
+                    if (is_func_ptr_type(&s->type)) {
+                        g_locals[li].is_func_ptr = 1;
+                        g_locals[li].is_ptr = 1;
+                        g_locals[li].size = 8;
+                    }
                     emit_store_var(li, -1, "%%rax");
                 }
             }
