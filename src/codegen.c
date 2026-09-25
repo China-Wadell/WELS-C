@@ -4,6 +4,7 @@ static FILE *g_out = 0;
 static int   g_label = 0;
 static int   g_str_id = 0;
 static int   g_target_windows = 0;
+static int   g_cur_line = 0;
 static program_t *g_prog = 0;
 
 #define MAX_LOOPS 64
@@ -163,7 +164,7 @@ static void gen_load_var(const char *name, int len) {
         else                             emit("    movq g%d(%%rip), %%rax\n", g_globals[gi].id);
         return;
     }
-    fprintf(stderr, "错误: 未声明的变量 %.*s\n", len, name);
+    fprintf(stderr, "%d: 错误: 未声明的变量 %.*s\n", g_cur_line, len, name);
     exit(1);
 }
 
@@ -286,6 +287,7 @@ static void gen_call(expr_t *e) {
 
 static void gen_expr(expr_t *e) {
     if (!e) return;
+    if (e->line > 0) g_cur_line = e->line;
     switch (e->kind) {
         case EX_INT: emit("    movq $%lld, %%rax\n", (long long)e->ival); break;
         case EX_FLOAT: { int id = float_add(e->fval); emit("    movsd .Lfloat%d(%%rip), %%xmm0\n", id); break; }
@@ -588,6 +590,7 @@ static int scan_frame(stmt_t *s) {
 
 static void gen_stmt(stmt_t *s) {
     if (!s) return;
+    if (s->line > 0) g_cur_line = s->line;
     switch (s->kind) {
         case ST_LET: {
             if (s->type.is_static) break;
