@@ -16,6 +16,7 @@ static int parse_block(parser_t *P, stmt_t **out);
 static int parse_stmt(parser_t *P, stmt_t **out);
 static int parse_expr_stmt(parser_t *P, stmt_t **out);
 static int parse_assign(parser_t *P, expr_t **out);
+static int parse_unary(parser_t *P, expr_t **out);
 static int parse_ternary(parser_t *P, expr_t **out);
 static int parse_shift(parser_t *P, expr_t **out);
 static int parse_bitand(parser_t *P, expr_t **out);
@@ -147,6 +148,39 @@ static int parse_primary(parser_t *P, expr_t **out) {
         expr_t *e = new_expr(EX_STRING);
         e->line = P->cur.line; e->col = P->cur.col;
         e->name = P->cur.start; e->name_len = P->cur.len;
+        p_advance(P); *out = e; return 0;
+    }
+    if (is_kw(P, KW_SIZEOF)) {
+        p_advance(P);
+        if (is_punct(P, '(')) {
+            p_advance(P);
+            type_desc_t ty;
+            if (parse_type(P, &ty) < 0) return -1;
+            if (expect_punct(P, ')', "期望 ')'") < 0) return -1;
+            expr_t *e = new_expr(EX_SIZEOF);
+            e->line = P->cur.line; e->col = P->cur.col;
+            e->typed_type = ty;
+            *out = e;
+            return 0;
+        }
+        /* sizeof 表达式：按大小 8 处理 */
+        expr_t *inner;
+        if (parse_unary(P, &inner) < 0) return -1;
+        expr_t *e = new_expr(EX_INT);
+        e->ival = 8;
+        *out = e;
+        return 0;
+    }
+    if (is_kw(P, KW_TRUE)) {
+        expr_t *e = new_expr(EX_INT);
+        e->line = P->cur.line; e->col = P->cur.col;
+        e->ival = 1;
+        p_advance(P); *out = e; return 0;
+    }
+    if (is_kw(P, KW_FALSE)) {
+        expr_t *e = new_expr(EX_INT);
+        e->line = P->cur.line; e->col = P->cur.col;
+        e->ival = 0;
         p_advance(P); *out = e; return 0;
     }
     if (is_kw(P, KW_EMPTY)) {

@@ -897,6 +897,11 @@ static void gen_expr(expr_t *e) {
             gen_expr(e->left);
             gen_expr(e->right);
             break;
+        case EX_SIZEOF: {
+            int sz = type_size(&e->typed_type);
+            emit("    movq $%d, %%rax\n", sz);
+            break;
+        }
         case EX_CALL: gen_call(e); break;
         default: break;
     }

@@ -93,6 +93,9 @@ static void print_expr(expr_t *e, int d) {
             printf("TYPED(%.*s)\n", e->typed_type.base_len, e->typed_type.base);
             print_expr(e->operand, d + 1);
             break;
+        case EX_SIZEOF:
+            printf("SIZEOF(%.*s)\n", e->typed_type.base_len, e->typed_type.base);
+            break;
         case EX_CONVERT:
             printf("CONVERT_TO(%.*s)\n", e->typed_type.base_len, e->typed_type.base);
             print_expr(e->left, d + 1);

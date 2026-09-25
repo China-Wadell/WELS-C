@@ -358,8 +358,11 @@ int lex_next(lexer_t *L, token_t *t) {
 
     /* 反斜杠转义：字符串外只允许 \n 和 \t */
     if (c == '\\') {
+    int n0 = peek_at(L, 1);
+    /* \= 是不等于运算符，交给 g_ops 处理 */
+    if (n0 != '=') {
     static char esc_buf[2];
-    int n = peek_at(L, 1);
+    int n = n0;
     char v;
     if      (n == 'n')  v = '\n';
     else if (n == 't')  v = '\t';
@@ -375,6 +378,7 @@ int lex_next(lexer_t *L, token_t *t) {
     t->kind = TOK_STRING;
     return 0;
     }
+    }  /* end if n0 != '=' */
 
     if (c == '#') {
         int r = read_preproc(L, t);
