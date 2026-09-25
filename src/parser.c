@@ -738,11 +738,10 @@ static int parse_modify(parser_t *P, stmt_t **out) {
     int nlen = P->cur.len;
     p_advance(P);
 
-    /* 可选：常量 关键字 */
     p_peek(P);
     if (is_kw(P, KW_CONST)) p_advance(P);
 
-    /* 可选：旧类型 */
+    /* 可选：旧类型（丢弃） */
     p_peek(P);
     if (P->cur.kind == TOK_KEYWORD &&
         (P->cur.kw_id == KW_INT || P->cur.kw_id == KW_DOUBLE ||
@@ -753,7 +752,7 @@ static int parse_modify(parser_t *P, stmt_t **out) {
         p_advance(P);
     }
 
-    /* 可选：旧值 */
+    /* 可选：旧值（丢弃） */
     p_peek(P);
     if (P->cur.kind == TOK_NUM_INT || P->cur.kind == TOK_NUM_FLOAT)
         p_advance(P);
@@ -761,7 +760,10 @@ static int parse_modify(parser_t *P, stmt_t **out) {
     if (!is_kw(P, KW_IS)) return p_err(P, "期望 '为'");
     p_advance(P);
 
-    /* 可选：新类型 */
+    /* 可选：新类型（存在则改类型） */
+    int has_new_type = 0;
+    type_desc_t new_type;
+    memset(&new_type, 0, sizeof(new_type));
     p_peek(P);
     if (P->cur.kind == TOK_KEYWORD &&
         (P->cur.kw_id == KW_INT || P->cur.kw_id == KW_DOUBLE ||
@@ -769,13 +771,41 @@ static int parse_modify(parser_t *P, stmt_t **out) {
          P->cur.kw_id == KW_SHORT || P->cur.kw_id == KW_BYTE ||
          P->cur.kw_id == KW_UNSIGNED || P->cur.kw_id == KW_CHAR ||
          P->cur.kw_id == KW_BOOL)) {
+        has_new_type = 1;
+        new_type.base = P->cur.start;
+        new_type.base_len = P->cur.len;
         p_advance(P);
+    }
+
+    /* 特殊：`修改 a 为 双精;` 只改类型、不给值 */
+    p_peek(P);
+    if (has_new_type && is_punct(P, ';')) {
+        p_advance(P);
+        stmt_t *s = new_stmt(ST_LET);
+        s->name = name; s->name_len = nlen;
+        s->modify_retype = 1;
+        s->modify_new_type = new_type;
+        s->init = 0;
+        *out = s;
+        return 0;
     }
 
     expr_t *val;
     if (parse_expr(P, &val) < 0) return -1;
     if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
 
+    if (has_new_type) {
+        /* 改值 + 改类型 */
+        stmt_t *s = new_stmt(ST_LET);
+        s->name = name; s->name_len = nlen;
+        s->modify_retype = 1;
+        s->modify_new_type = new_type;
+        s->init = val;
+        *out = s;
+        return 0;
+    }
+
+    /* 只改值 */
     stmt_t *s = new_stmt(ST_EXPR);
     expr_t *assign = new_expr(EX_ASSIGN);
     assign->op_text = "="; assign->op_len = 1;

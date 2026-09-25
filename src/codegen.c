@@ -245,7 +245,11 @@ static void gen_load_var(const char *name, int len) {
         else                             emit("    movq g%d(%%rip), %%rax\n", g_globals[gi].id);
         return;
     }
-    fprintf(stderr, "%d: 错误: 未声明的变量 %.*s\n", g_cur_line, len, name);
+    fprintf(stderr, "%d: 错误: 未声明的变量 %.*s (g_nlocals=%d)\n",
+                g_cur_line, len, name, g_nlocals);
+    for (int _i = 0; _i < g_nlocals; _i++)
+        fprintf(stderr, "  [%d] %.*s off=%d\n",
+                _i, g_locals[_i].len, g_locals[_i].name, g_locals[_i].offset);
     exit(1);
 }
 
@@ -784,6 +788,37 @@ static void gen_stmt(stmt_t *s) {
     switch (s->kind) {
         case ST_LET: {
             if (s->type.is_static) break;
+
+            /* 修改 + 改类型 */
+            if (s->modify_retype) {
+                int li = find_local(s->name, s->name_len);
+                int gi = (li < 0) ? find_global(s->name, s->name_len) : -1;
+                if (li < 0 && gi < 0) {
+                    fprintf(stderr, "%d: 错误: 未声明的变量 %.*s\n",
+                            g_cur_line, s->name_len, s->name);
+                    exit(1);
+                }
+                int new_is_f = is_float_type(&s->modify_new_type);
+                if (li >= 0) g_locals[li].is_float = new_is_f;
+                else         g_globals[gi].is_float = new_is_f;
+
+                if (s->init) {
+                    gen_expr(s->init);
+                    if (new_is_f) {
+                        if (s->init->kind == EX_INT) {
+                            emit("    pxor %%xmm0, %%xmm0\n");
+                            emit("    cvtsi2sd %%rax, %%xmm0\n");
+                        }
+                        if (li >= 0) emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
+                        else         emit("    movsd %%xmm0, g%d(%%rip)\n", g_globals[gi].id);
+                    } else {
+                        if (li >= 0) emit("    movq %%rax, %d(%%rbp)\n", g_locals[li].offset);
+                        else         emit("    movq %%rax, g%d(%%rip)\n", g_globals[gi].id);
+                    }
+                }
+                break;
+            }
+
             int is_f = is_float_type(&s->type);
             int is_rng = s->type.is_range;
             int is_pt = s->type.is_ptr;

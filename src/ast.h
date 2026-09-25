@@ -51,6 +51,9 @@ typedef struct stmt {
 
     expr_t **case_values; int ncases;
     struct stmt *default_s;
+
+    int modify_retype;
+    type_desc_t modify_new_type;
 } stmt_t;
 
 typedef struct {
