@@ -42,7 +42,7 @@ static int file_exists(const char *p) {
     return stat(p, &st) == 0;
 }
 
-static const char *resolve_path(const char *name, char *out, int out_sz) {
+__attribute__((unused)) static const char *resolve_path(const char *name, char *out, int out_sz) {
     if (name[0] == '/' || name[0] == '\\' || (name[0] && name[1] == ':')) {
         if (file_exists(name)) { snprintf(out, out_sz, "%s", name); return out; }
         return NULL;
@@ -183,7 +183,12 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
                             if (strcmp(g_modules[m].path, full) == 0) { dup = 1; break; }
                         if (!dup) {
                             module_entry_t *me = &g_modules[g_nmodules++];
-                            snprintf(me->path, sizeof(me->path), "%s", full);
+                            {
+                                size_t pl = strlen(full);
+                                if (pl >= sizeof(me->path)) pl = sizeof(me->path) - 1;
+                                memcpy(me->path, full, pl);
+                                me->path[pl] = 0;
+                            }
                             int nl = name_len;
                             if (nl >= 127) nl = 127;
                             memcpy(me->name, src + k + name_start, nl);
@@ -462,8 +467,6 @@ int main(int argc, char **argv) {
     }
 
     /* ===== 阶段 2：逐个解析模块，收集函数 ===== */
-    extern program_t *g_modules_prog;
-    extern int g_nmodules_prog;
     extern void codegen_register_module(const char *name, int name_len, func_t **funcs, int nfuncs);
 
     for (int mi = 0; mi < g_nmodules; mi++) {

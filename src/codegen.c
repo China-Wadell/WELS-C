@@ -170,6 +170,9 @@ static int float_type_size(type_desc_t *t) {
 
 static int type_size(type_desc_t *t) {
     if (t->is_ptr || t->is_array) return 8;
+    /* 空 指针 = 8 字节，空 单独声明占 1 字节占位 */
+    if (t->base_len == 3 && memcmp(t->base, "空", 3) == 0) return 1;
+    if (t->base_len == 4 && memcmp(t->base, "void", 4) == 0) return 1;
     const char *b = t->base; int l = t->base_len;
     if (l == 6 && memcmp(b, "字节", 6) == 0) return 1;
     if (l == 4 && memcmp(b, "byte", 4) == 0) return 1;
@@ -177,10 +180,10 @@ static int type_size(type_desc_t *t) {
     if (l == 4 && memcmp(b, "char", 4) == 0) return 1;
     if (l == 6 && memcmp(b, "短整", 6) == 0) return 2;
     if (l == 5 && memcmp(b, "short", 5) == 0) return 2;
-    if (l == 6 && memcmp(b, "整数", 6) == 0) return 4;
-    if (l == 3 && memcmp(b, "int", 3) == 0) return 4;
-    if (l == 6 && memcmp(b, "无符", 6) == 0) return 4;
-    if (l == 8 && memcmp(b, "unsigned", 8) == 0) return 4;
+    if (l == 6 && memcmp(b, "整数", 6) == 0) return 8;
+    if (l == 3 && memcmp(b, "int", 3) == 0) return 8;
+    if (l == 6 && memcmp(b, "无符", 6) == 0) return 8;
+    if (l == 8 && memcmp(b, "unsigned", 8) == 0) return 8;
     if (l == 6 && memcmp(b, "浮点", 6) == 0) return 4;
     if (l == 5 && memcmp(b, "float", 5) == 0) return 4;
     if (l == 6 && memcmp(b, "双精", 6) == 0) return 8;
@@ -358,7 +361,7 @@ static int expr_is_string(expr_t *e) {
     return 0;
 }
 
-static void emit_store_var(int li, int gi, const char *reg) {
+static void emit_store_var(int li, int gi, __attribute__((unused)) const char *reg) {
     /* 按变量 size 存 %rax 或 %xmm0 到变量 */
     if (li >= 0) {
         int off = g_locals[li].offset;
@@ -1121,7 +1124,7 @@ static void gen_stmt(stmt_t *s) {
             } else {
                 if (s->init) gen_expr(s->init);
                 else emit("    movq $0, %%rax\n");
-                int off = local_add(s->name, s->name_len);
+                int off = local_add(s->name, s->name_len);  (void)off;
                 {
                     int li = find_local(s->name, s->name_len);
                     g_locals[li].size = type_size(&s->type);
