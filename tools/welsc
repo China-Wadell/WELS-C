@@ -1,0 +1,53 @@
+#!/bin/bash
+# welsc — WELS-C 一键编译脚本
+# 用法: welsc <file.wec> [-o output]
+
+set -e
+
+if [ $# -lt 1 ]; then
+    echo "用法: welsc <file.wec> [-o output]"
+    exit 1
+fi
+
+WELS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+COMPILER="$WELS_ROOT/compiler/wescc"
+RUNTIME="$WELS_ROOT/runtime/wels_rt.o"
+STDLIB="$WELS_ROOT/stdlib"
+
+if [ ! -x "$COMPILER" ]; then
+    echo "错误: 找不到编译器 $COMPILER"
+    echo "请先 cd $WELS_ROOT/compiler && make"
+    exit 1
+fi
+
+if [ ! -f "$RUNTIME" ]; then
+    echo "错误: 找不到 runtime $RUNTIME"
+    echo "请先 cd $WELS_ROOT/runtime && make"
+    exit 1
+fi
+
+IN="$1"
+shift
+
+# 默认输出名：源文件去掉 .wec
+BASE=$(basename "$IN" .wec)
+OUT="$BASE"
+
+# 解析 -o
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) OUT="$2"; shift 2 ;;
+        *) echo "未知参数: $1"; exit 1 ;;
+    esac
+done
+
+TMP_S=$(mktemp /tmp/welsc-XXXXXX.s)
+trap "rm -f $TMP_S" EXIT
+
+echo "[1/2] wescc $IN -> 汇编"
+"$COMPILER" "$IN" -o "$TMP_S" -target wels -I "$STDLIB"
+
+echo "[2/2] gcc 汇编 -> $OUT"
+gcc -nostdlib -static "$TMP_S" "$RUNTIME" -o "$OUT"
+
+echo "完成: $OUT"
