@@ -1,5 +1,9 @@
 #include "parser.h"
 
+const char *g_parse_module_name = 0;
+int         g_parse_module_name_len = 0;
+int         g_parse_category = 0;
+
 typedef struct {
     lexer_t *L;
     token_t  cur;
@@ -1159,11 +1163,18 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
             return parse_ptr_modify(P, out);
     }
     if (is_kw(P, KW_CALL)) {
-        /* 调用 模块名 { ... }  — 模块名仅作占位，块内直接编译 */
         p_advance(P);
         if (P->cur.kind != TOK_IDENT) return p_err(P, "期望模块名");
+        const char *mn = P->cur.start;
+        int mnl = P->cur.len;
         p_advance(P);
-        return parse_block(P, out);
+        if (parse_block(P, out) < 0) return -1;
+        if (*out) {
+            (*out)->no_scope = 1;
+            (*out)->call_module_name = mn;
+            (*out)->call_module_name_len = mnl;
+        }
+        return 0;
     }
     if (is_kw(P, KW_ASM))                          return parse_asm(P, out);
     if (is_kw(P, KW_LABEL)) {
@@ -1354,6 +1365,9 @@ static int parse_func(parser_t *P, func_t **out) {
     }
 
     if (parse_block(P, &f->body) < 0) return -1;
+    f->category = g_parse_category;
+    f->module_name = g_parse_module_name;
+    f->module_name_len = g_parse_module_name_len;
     *out = f;
     return 0;
 }

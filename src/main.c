@@ -2,6 +2,7 @@
 #include "ast.h"
 #include "parser.h"
 #include "codegen.h"
+#include <sys/stat.h>
 
 static char *read_file(const char *path, int *out_len) {
     FILE *f = fopen(path, "rb");
@@ -16,6 +17,53 @@ static char *read_file(const char *path, int *out_len) {
     *out_len = (int)size;
     return buf;
 }
+
+#define MAX_MODULES 32
+typedef struct {
+    char path[512];
+    char name[128];
+    int  name_len;
+} module_entry_t;
+static module_entry_t g_modules[MAX_MODULES];
+static int g_nmodules = 0;
+
+/* ---------- 头文件搜索路径 ---------- */
+#define MAX_SEARCH 16
+static char *g_search[MAX_SEARCH];
+static int   g_nsearch = 0;
+
+static void add_search_dir(const char *dir) {
+    if (g_nsearch < MAX_SEARCH)
+        g_search[g_nsearch++] = strdup(dir);
+}
+
+static int file_exists(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0;
+}
+
+static const char *resolve_path(const char *name, char *out, int out_sz) {
+    if (name[0] == '/' || name[0] == '\\' || (name[0] && name[1] == ':')) {
+        if (file_exists(name)) { snprintf(out, out_sz, "%s", name); return out; }
+        return NULL;
+    }
+    for (int i = 0; i < g_nsearch; i++) {
+        snprintf(out, out_sz, "%s/%s", g_search[i], name);
+        if (file_exists(out)) return out;
+    }
+    return NULL;
+}
+
+/* ---------- 头文件防重 ---------- */
+#define MAX_INCLUDE 64
+static char *g_included[MAX_INCLUDE];
+static int   g_nincluded = 0;
+static int already_included(const char *p) {
+    for (int i = 0; i < g_nincluded; i++)
+        if (strcmp(g_included[i], p) == 0) return 1;
+    return 0;
+}
+
 
 typedef struct { char *buf; int len; int cap; } sb_t;
 static void sb_init(sb_t *s) { s->cap = 256; s->len = 0; s->buf = malloc(s->cap); s->buf[0] = 0; }
@@ -61,12 +109,6 @@ static int macro_defined(const char *name, int nlen) {
 }
 
 #define MAX_INCLUDE 64
-static char *g_included[MAX_INCLUDE];
-static int   g_nincluded = 0;
-static int already_included(const char *p) {
-    for (int i = 0; i < g_nincluded; i++) if (strcmp(g_included[i], p) == 0) return 1;
-    return 0;
-}
 
 static int starts_with(const char *s, int len, const char *prefix) {
     int plen = (int)strlen(prefix);
@@ -125,20 +167,32 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
                     memcpy(path, src + k, path_end);
                     path[path_end] = 0;
 
+                    /* 剩余部分是模块名 */
+                    int name_start = path_end;
+                    while (name_start < plen && (src[k+name_start] == ' ' || src[k+name_start] == '\t')) name_start++;
+                    int name_len = plen - name_start;
+
                     char full[1024];
                     if (path[0] == '/' || path[0] == '\\') snprintf(full, sizeof(full), "%s", path);
                     else                                     snprintf(full, sizeof(full), "%s/%s", base_dir, path);
 
-                    if (!already_included(full)) {
-                        int hlen;
-                        char *hsrc = read_file(full, &hlen);
-                        if (!hsrc) { fprintf(stderr, "错误: 无法打开模块 %s\n", full); exit(1); }
-                        if (g_nincluded < MAX_INCLUDE) g_included[g_nincluded++] = strdup(full);
-                        char *exp = pp_process(hsrc, hlen, base_dir, depth + 1);
-                        free(hsrc);
-                        sb_append(&out, exp, (int)strlen(exp));
-                        free(exp);
+                    /* 登记到模块列表（去重） */
+                    if (g_nmodules < MAX_MODULES) {
+                        int dup = 0;
+                        for (int m = 0; m < g_nmodules; m++)
+                            if (strcmp(g_modules[m].path, full) == 0) { dup = 1; break; }
+                        if (!dup) {
+                            module_entry_t *me = &g_modules[g_nmodules++];
+                            snprintf(me->path, sizeof(me->path), "%s", full);
+                            int nl = name_len;
+                            if (nl >= 127) nl = 127;
+                            memcpy(me->name, src + k + name_start, nl);
+                            me->name[nl] = 0;
+                            me->name_len = nl;
+                        }
                     }
+                    /* 输出空行占位 */
+                    sb_appendc(&out, '\n');
                     i = j + 1; at_line_start = 0; continue;
                 }
             }
@@ -334,11 +388,14 @@ static char *pp_process(const char *src, int len, const char *base_dir, int dept
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "用法: wescc <file.wec> [-o out.s] [-target windows|linux] [-D NAME]\n");
+        fprintf(stderr, "用法: wescc <file.wec> [-o out.s] [-target windows|linux] [-D NAME] [-I dir]\n");
         return 1;
     }
     const char *in_path = argv[1];
     const char *out_path = "out.s";
+
+    char *extra_paths[16];
+    int nextra = 0;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
@@ -349,36 +406,103 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-D") == 0 && i + 1 < argc) {
             add_macro(argv[i+1], (int)strlen(argv[i+1]), "", 0);
             i++;
+        } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
+            if (nextra < 16) extra_paths[nextra++] = argv[++i];
         }
     }
 
-    int len;
-    char *raw = read_file(in_path, &len);
-    if (!raw) { perror(in_path); return 1; }
-
-    char dir[512];
+    char dirbuf[512];
     const char *slash = strrchr(in_path, '/');
     if (!slash) slash = strrchr(in_path, '\\');
     if (slash) {
         int dlen = (int)(slash - in_path);
         if (dlen >= 512) dlen = 511;
-        memcpy(dir, in_path, dlen); dir[dlen] = 0;
-    } else { dir[0] = '.'; dir[1] = 0; }
+        memcpy(dirbuf, in_path, dlen); dirbuf[dlen] = 0;
+    } else { dirbuf[0] = '.'; dirbuf[1] = 0; }
 
-    char *src = pp_process(raw, len, dir, 0);
+    add_search_dir(dirbuf);
+    add_search_dir(".");
+    for (int i = 0; i < nextra; i++) add_search_dir(extra_paths[i]);
+    const char *env = getenv("WELS_C_PATH");
+    if (env) {
+        char *copy = strdup(env);
+        char *p = copy;
+        while (*p) {
+            char *sep = strchr(p, ':');
+            if (sep) *sep = 0;
+            if (*p) add_search_dir(p);
+            if (!sep) break;
+            p = sep + 1;
+        }
+        free(copy);
+    }
+
+    /* ===== 阶段 1：解析主文件（#导入 只登记，不展开） ===== */
+    int len;
+    char *raw = read_file(in_path, &len);
+    if (!raw) { perror(in_path); return 1; }
+
+    char *src = pp_process(raw, len, dirbuf, 0);
     free(raw);
 
     lexer_t L;
     lex_init(&L, src, (int)strlen(src));
-
     program_t prog;
     memset(&prog, 0, sizeof(prog));
+
+    extern const char *g_parse_module_name;
+    extern int g_parse_module_name_len;
+    extern int g_parse_category;
+    g_parse_module_name = 0;
+    g_parse_module_name_len = 0;
+    g_parse_category = 0;
 
     if (parse_program(&L, &prog) < 0) {
         fprintf(stderr, "解析失败\n"); free(src); return 1;
     }
+
+    /* ===== 阶段 2：逐个解析模块，收集函数 ===== */
+    extern program_t *g_modules_prog;
+    extern int g_nmodules_prog;
+    extern void codegen_register_module(const char *name, int name_len, func_t **funcs, int nfuncs);
+
+    for (int mi = 0; mi < g_nmodules; mi++) {
+        int hlen;
+        char *hraw = read_file(g_modules[mi].path, &hlen);
+        if (!hraw) {
+            fprintf(stderr, "错误: 无法读取模块 %s\n", g_modules[mi].path);
+            free(src); return 1;
+        }
+        char *hsrc = pp_process(hraw, hlen, dirbuf, 0);
+        free(hraw);
+
+        lexer_t ML;
+        lex_init(&ML, hsrc, (int)strlen(hsrc));
+        program_t mprog;
+        memset(&mprog, 0, sizeof(mprog));
+
+        g_parse_module_name = g_modules[mi].name;
+        g_parse_module_name_len = g_modules[mi].name_len;
+        g_parse_category = 1;
+
+        if (parse_program(&ML, &mprog) < 0) {
+            fprintf(stderr, "模块 %s 解析失败\n", g_modules[mi].name);
+            free(hsrc); free(src); return 1;
+        }
+
+        codegen_register_module(g_modules[mi].name, g_modules[mi].name_len,
+                                 mprog.funcs, mprog.nfuncs);
+        free(hsrc);
+    }
+
+    g_parse_module_name = 0;
+    g_parse_module_name_len = 0;
+    g_parse_category = 0;
+
+    /* ===== 阶段 3：codegen ===== */
     if (codegen_program(&prog, out_path) < 0) {
-        fprintf(stderr, "代码生成失败\n"); ast_free_program(&prog); free(src); return 1;
+        fprintf(stderr, "代码生成失败\n");
+        ast_free_program(&prog); free(src); return 1;
     }
     printf("生成: %s\n", out_path);
     ast_free_program(&prog); free(src);

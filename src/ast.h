@@ -54,6 +54,9 @@ typedef struct stmt {
 
     int modify_retype;
     type_desc_t modify_new_type;
+    int no_scope;
+    const char *call_module_name;
+    int call_module_name_len;
 } stmt_t;
 
 typedef struct {
@@ -67,6 +70,9 @@ typedef struct {
     type_desc_t ret_type; int has_ret;
     int has_varargs;
     stmt_t *body;
+    int category;                    /* 0=主文件函数/函数类, 1=模块函数类 */
+    const char *module_name;
+    int module_name_len;
 } func_t;
 
 typedef struct { const char *text; int len; } include_t;

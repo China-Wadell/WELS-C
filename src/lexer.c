@@ -299,6 +299,7 @@ static int read_string(lexer_t *L, token_t *t) {
             int nc = peek_at(L, 1);
             if (nc == -1 || nc == ',' || nc == ')' ||
                 nc == ' ' || nc == '\t' || nc == '\n' || nc == '\r' ||
+                nc == ';' ||
                 nc == '\\') {
                 break;
             }

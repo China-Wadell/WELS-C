@@ -7,6 +7,44 @@ static int   g_cur_line = 0;
 static int   g_binop_unsigned = 0;   /* 当前 gen_binop 的两个操作数是否无符号 */
 static int   g_cur_float_is_4 = 0;   /* 当前浮点运算是否为 4 字节 float */
 
+/* ---------- 模块表 ---------- */
+#define MAX_MODULES_CG 32
+typedef struct {
+    char name[128];
+    int  name_len;
+    func_t **funcs;
+    int      nfuncs;
+} module_cg_t;
+static module_cg_t g_modules_codegen[MAX_MODULES_CG];
+static int g_nmodules_codegen = 0;
+
+static const char *g_cur_module = 0;
+static int         g_cur_module_len = 0;
+
+void codegen_register_module(const char *name, int name_len, func_t **funcs, int nfuncs) {
+    if (g_nmodules_codegen >= MAX_MODULES_CG) return;
+    module_cg_t *m = &g_modules_codegen[g_nmodules_codegen++];
+    int nl = name_len; if (nl >= 127) nl = 127;
+    memcpy(m->name, name, nl); m->name[nl] = 0;
+    m->name_len = nl;
+    m->funcs = funcs;
+    m->nfuncs = nfuncs;
+}
+
+static int find_module_func_idx(const char *modname, int modlen,
+                                 const char *fnname, int fnlen) {
+    for (int i = 0; i < g_nmodules_codegen; i++) {
+        module_cg_t *m = &g_modules_codegen[i];
+        if (m->name_len != modlen || memcmp(m->name, modname, modlen) != 0) continue;
+        for (int j = 0; j < m->nfuncs; j++) {
+            func_t *f = m->funcs[j];
+            if (f->name_len == fnlen && memcmp(f->name, fnname, fnlen) == 0)
+                return i;
+        }
+    }
+    return -1;
+}
+
 #define MAX_FUNC_SIGS 64
 typedef struct {
     const char *name; int len;
@@ -454,6 +492,21 @@ static void emit_globals(void) {
     emit("    .text\n");
 }
 
+static void emit_func_symbol(const char *fn, int fnlen) {
+    if (g_cur_module) {
+        int idx = find_module_func_idx(g_cur_module, g_cur_module_len, fn, fnlen);
+        if (idx >= 0) {
+            emit("%.*s_%.*s", g_modules_codegen[idx].name_len,
+                 g_modules_codegen[idx].name, fnlen, fn);
+            return;
+        }
+    }
+    int is_main = (fnlen == 3 && memcmp(fn, "主", 3) == 0) ||
+                  (fnlen == 4 && memcmp(fn, "main", 4) == 0);
+    if (is_main) emit("main");
+    else         emit("%.*s", fnlen, fn);
+}
+
 static void gen_call(expr_t *e) {
     int n = e->nargs;
     const char *fn = e->operand->name;
@@ -518,7 +571,10 @@ static void gen_call(expr_t *e) {
         }
     }
 
-    emit("    movl $0, %%eax\n    call %.*s\n", fnlen, fn);
+    emit("    movl $0, %%eax\n");
+    emit("    call ");
+    emit_func_symbol(fn, fnlen);
+    emit("\n");
 }
 
 static void gen_expr(expr_t *e) {
@@ -1091,9 +1147,21 @@ static void gen_stmt(stmt_t *s) {
             break;
         }
         case ST_BLOCK: {
-            int saved = g_nlocals;
-            for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]);
-            g_nlocals = saved;
+            const char *saved_mod = g_cur_module;
+            int saved_mod_len = g_cur_module_len;
+            if (s->call_module_name) {
+                g_cur_module = s->call_module_name;
+                g_cur_module_len = s->call_module_name_len;
+            }
+            if (s->no_scope) {
+                for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]);
+            } else {
+                int saved = g_nlocals;
+                for (int i = 0; i < s->nstmts; i++) gen_stmt(s->stmts[i]);
+                g_nlocals = saved;
+            }
+            g_cur_module = saved_mod;
+            g_cur_module_len = saved_mod_len;
             break;
         }
         case ST_MATCH: {
@@ -1223,10 +1291,20 @@ static void gen_func(func_t *f) {
     g_nlocals = 0; g_stack_used = 0;
     const char *name = f->name;
     int nlen = f->name_len;
-    emit("    .globl main\n");
-    if ((nlen == 3 && memcmp(name, "主", 3) == 0) ||
-        (nlen == 4 && memcmp(name, "main", 4) == 0)) emit("main:\n");
-    else emit("%.*s:\n", nlen, name);
+    int is_main = (nlen == 3 && memcmp(name, "主", 3) == 0) ||
+                  (nlen == 4 && memcmp(name, "main", 4) == 0);
+    if (f->category == 1 && f->module_name) {
+        emit("    .type %.*s_%.*s, @function\n",
+             f->module_name_len, f->module_name, nlen, name);
+        emit("%.*s_%.*s:\n",
+             f->module_name_len, f->module_name, nlen, name);
+    } else if (is_main) {
+        emit("    .globl main\n");
+        emit("main:\n");
+    } else {
+        emit("    .globl %.*s\n", nlen, name);
+        emit("%.*s:\n", nlen, name);
+    }
     emit("    push %%rbp\n    mov %%rsp, %%rbp\n");
 
     /* 动态栈帧大小：扫描 AST 算字节数，16 字节对齐 */
@@ -1272,7 +1350,27 @@ int codegen_program(program_t *p, const char *out_path) {
     emit(".Lfmt_f:\n    .asciz \"%%f\"\n");
     emit("    .text\n");
     emit_globals();
+
+    /* 主文件函数 */
     for (int i = 0; i < p->nfuncs; i++) gen_func(p->funcs[i]);
+
+    /* 模块函数：切换到模块上下文后生成 */
+    for (int mi = 0; mi < g_nmodules_codegen; mi++) {
+        module_cg_t *m = &g_modules_codegen[mi];
+        const char *saved_mod = g_cur_module;
+        int saved_mod_len = g_cur_module_len;
+        g_cur_module = m->name;
+        g_cur_module_len = m->name_len;
+        for (int j = 0; j < m->nfuncs; j++) {
+            func_t *f = m->funcs[j];
+            if (f->name_len == 3 && memcmp(f->name, "主", 3) == 0) continue;
+            if (f->name_len == 4 && memcmp(f->name, "main", 4) == 0) continue;
+            gen_func(f);
+        }
+        g_cur_module = saved_mod;
+        g_cur_module_len = saved_mod_len;
+    }
+
     emit_strings();
     emit_floats();
     emit("    .section .note.GNU-stack,\"\",@progbits\n\n");
