@@ -37,6 +37,7 @@ typedef enum {
     ST_LET, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_BLOCK,
     ST_BREAK, ST_CONTINUE, ST_MATCH, ST_LABEL, ST_GOTO, ST_ASM,
     ST_CONT_DECL, ST_CONT_PUT, ST_CONT_TAKE, ST_CONT_CLEAR,
+    ST_FALLTHROUGH,
 } stmt_kind_t;
 
 typedef struct stmt {

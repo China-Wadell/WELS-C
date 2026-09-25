@@ -658,10 +658,13 @@ static void gen_expr(expr_t *e) {
                      is_op_text(e->left->op_text, e->left->op_len, "*") &&
                      e->left->operand->kind == EX_IDENT) {
                 gen_expr(e->right);
-                int off = -1;
                 int li2 = find_local(e->left->operand->name, e->left->operand->name_len);
-                if (li2 >= 0) off = g_locals[li2].offset;
-                if (off >= 0) emit("    movq %d(%%rbp), %%rcx\n", off);
+                if (li2 >= 0) {
+                    emit("    movq %d(%%rbp), %%rcx\n", g_locals[li2].offset);
+                } else {
+                    int gi2 = find_global(e->left->operand->name, e->left->operand->name_len);
+                    if (gi2 >= 0) emit("    movq g%d(%%rip), %%rcx\n", g_globals[gi2].id);
+                }
                 emit("    movq %%rax, (%%rcx)\n");
             }
             else if (e->left->kind == EX_INDEX) {
@@ -887,7 +890,13 @@ static void gen_stmt(stmt_t *s) {
             for (int i = 0; i < s->ncases; i++) {
                 emit(".L%d:\n", L_case[i]);
                 gen_stmt(s->stmts[i]);
-                emit("    jmp .L%d\n", L_end);
+                int fall = 0;
+                if (s->stmts[i] && s->stmts[i]->kind == ST_BLOCK &&
+                    s->stmts[i]->nstmts > 0) {
+                    stmt_t *last = s->stmts[i]->stmts[s->stmts[i]->nstmts - 1];
+                    if (last && last->kind == ST_FALLTHROUGH) fall = 1;
+                }
+                if (!fall) emit("    jmp .L%d\n", L_end);
             }
             emit(".L%d:\n", L_end);
             free(L_case);

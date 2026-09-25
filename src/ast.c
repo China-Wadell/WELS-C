@@ -178,6 +178,9 @@ static void print_stmt(stmt_t *s, int d) {
         case ST_CONTINUE:
             indent(d); puts("CONTINUE");
             break;
+        case ST_FALLTHROUGH:
+            indent(d); puts("FALLTHROUGH");
+            break;
         case ST_LABEL:
             indent(d); printf("LABEL(%.*s)\n", s->name_len, s->name);
             break;

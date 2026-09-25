@@ -706,6 +706,31 @@ static int parse_enum(parser_t *P, program_t *out) {
     return 0;
 }
 
+static int parse_ptr_modify(parser_t *P, stmt_t **out) {
+    const char *pname = P->cur.start;
+    int plen = P->cur.len;
+    p_advance(P);
+    p_advance(P);
+    if (P->cur.kind == TOK_IDENT) p_advance(P);
+    if (!is_kw(P, KW_IS)) return p_err(P, "期望 '为'");
+    p_advance(P);
+    expr_t *val;
+    if (parse_expr(P, &val) < 0) return -1;
+    if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+    stmt_t *s = new_stmt(ST_EXPR);
+    expr_t *assign = new_expr(EX_ASSIGN);
+    assign->op_text = "="; assign->op_len = 1;
+    expr_t *deref = new_expr(EX_UNARY);
+    deref->op_text = "*"; deref->op_len = 1;
+    expr_t *lhs = new_expr(EX_IDENT);
+    lhs->name = pname; lhs->name_len = plen;
+    deref->operand = lhs;
+    assign->left = deref; assign->right = val;
+    s->expr = assign;
+    *out = s;
+    return 0;
+}
+
 static int parse_modify(parser_t *P, stmt_t **out) {
     p_advance(P);
     if (P->cur.kind != TOK_IDENT) return p_err(P, "期望变量名");
@@ -715,24 +740,37 @@ static int parse_modify(parser_t *P, stmt_t **out) {
 
     /* 可选：常量 关键字 */
     p_peek(P);
-    if (is_kw(P, KW_CONST)) {
+    if (is_kw(P, KW_CONST)) p_advance(P);
+
+    /* 可选：旧类型 */
+    p_peek(P);
+    if (P->cur.kind == TOK_KEYWORD &&
+        (P->cur.kw_id == KW_INT || P->cur.kw_id == KW_DOUBLE ||
+         P->cur.kw_id == KW_FLOAT || P->cur.kw_id == KW_LONG ||
+         P->cur.kw_id == KW_SHORT || P->cur.kw_id == KW_BYTE ||
+         P->cur.kw_id == KW_UNSIGNED || P->cur.kw_id == KW_CHAR ||
+         P->cur.kw_id == KW_BOOL)) {
         p_advance(P);
-        /* 可选：类型 */
-        p_peek(P);
-        if (P->cur.kind == TOK_KEYWORD &&
-            (P->cur.kw_id == KW_INT || P->cur.kw_id == KW_DOUBLE ||
-             P->cur.kw_id == KW_FLOAT || P->cur.kw_id == KW_LONG)) {
-            p_advance(P);
-        }
-        /* 可选：旧值 */
-        p_peek(P);
-        if (P->cur.kind == TOK_NUM_INT || P->cur.kind == TOK_NUM_FLOAT) {
-            p_advance(P);
-        }
     }
+
+    /* 可选：旧值 */
+    p_peek(P);
+    if (P->cur.kind == TOK_NUM_INT || P->cur.kind == TOK_NUM_FLOAT)
+        p_advance(P);
 
     if (!is_kw(P, KW_IS)) return p_err(P, "期望 '为'");
     p_advance(P);
+
+    /* 可选：新类型 */
+    p_peek(P);
+    if (P->cur.kind == TOK_KEYWORD &&
+        (P->cur.kw_id == KW_INT || P->cur.kw_id == KW_DOUBLE ||
+         P->cur.kw_id == KW_FLOAT || P->cur.kw_id == KW_LONG ||
+         P->cur.kw_id == KW_SHORT || P->cur.kw_id == KW_BYTE ||
+         P->cur.kw_id == KW_UNSIGNED || P->cur.kw_id == KW_CHAR ||
+         P->cur.kw_id == KW_BOOL)) {
+        p_advance(P);
+    }
 
     expr_t *val;
     if (parse_expr(P, &val) < 0) return -1;
@@ -1075,6 +1113,20 @@ static int parse_stmt(parser_t *P, stmt_t **out) {
     if (is_kw(P, KW_SET)) {
         p_advance(P);
         return parse_stmt(P, out);
+    }
+
+    if (is_kw(P, KW_FALLTHROUGH)) {
+        p_advance(P);
+        if (expect_punct(P, ';', "期望 ';'") < 0) return -1;
+        *out = new_stmt(ST_FALLTHROUGH);
+        return 0;
+    }
+
+    /* IDENT + 修改：p 修改 a 为 100; */
+    if (P->cur.kind == TOK_IDENT) {
+        p_peek(P);
+        if (P->next.kind == TOK_KEYWORD && P->next.kw_id == KW_MODIFY)
+            return parse_ptr_modify(P, out);
     }
     if (is_kw(P, KW_CALL)) {
         /* 调用 模块名 { ... }  — 模块名仅作占位，块内直接编译 */
