@@ -23,6 +23,7 @@ typedef struct {
     int is_range;
     int64_t range_lo, range_hi;
     int range_lo_open, range_hi_open;
+    int is_ptr;
 } local_t;
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
@@ -55,6 +56,7 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].is_container = 0;
     g_locals[g_nlocals].cont_type = 0;
     g_locals[g_nlocals].is_range = 0;
+    g_locals[g_nlocals].is_ptr = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -137,6 +139,18 @@ static int expr_is_float(expr_t *e) {
         case EX_UNARY:  return expr_is_float(e->operand);
         default: return 0;
     }
+}
+
+static int expr_is_ptr(expr_t *e) {
+    if (!e) return 0;
+    if (e->kind == EX_IDENT) {
+        int li = find_local(e->name, e->name_len);
+        if (li >= 0) return g_locals[li].is_ptr;
+        return 0;
+    }
+    if (e->kind == EX_UNARY &&
+        is_op_text(e->op_text, e->op_len, "&")) return 1;
+    return 0;
 }
 
 static int expr_is_string(expr_t *e) {
@@ -399,11 +413,35 @@ static void gen_expr(expr_t *e) {
                 emit("    movsd (%%rsp), %%xmm1\n    add $8, %%rsp\n");
                 gen_binop_float(e->op_text, e->op_len);
             } else {
-                gen_expr(e->right);
-                emit("    push %%rax\n");
-                gen_expr(e->left);
-                emit("    pop %%rcx\n");
-                gen_binop(e->op_text, e->op_len);
+                int lp = expr_is_ptr(e->left);
+                int rp = expr_is_ptr(e->right);
+                int is_add = is_op_text(e->op_text, e->op_len, "+");
+                int is_sub = is_op_text(e->op_text, e->op_len, "-");
+                if ((lp || rp) && (is_add || is_sub)) {
+                    /* 指针算术：把偏移量乘 8 */
+                    gen_expr(e->right);
+                    if (rp && !lp) {
+                        /* n + p 或 n - p（少见），偏移量在左 */
+                        emit("    movq %%rax, %%r15\n");
+                        gen_expr(e->left);
+                        emit("    shl $3, %%r15\n");
+                        if (is_add) emit("    add %%r15, %%rax\n");
+                        else        emit("    sub %%r15, %%rax\n");
+                    } else {
+                        emit("    shl $3, %%rax\n");
+                        emit("    push %%rax\n");
+                        gen_expr(e->left);
+                        emit("    pop %%rcx\n");
+                        if (is_add) emit("    add %%rcx, %%rax\n");
+                        else        emit("    sub %%rcx, %%rax\n");
+                    }
+                } else {
+                    gen_expr(e->right);
+                    emit("    push %%rax\n");
+                    gen_expr(e->left);
+                    emit("    pop %%rcx\n");
+                    gen_binop(e->op_text, e->op_len);
+                }
             }
             break;
         }
@@ -596,6 +634,7 @@ static void gen_stmt(stmt_t *s) {
             if (s->type.is_static) break;
             int is_f = is_float_type(&s->type);
             int is_rng = s->type.is_range;
+            int is_pt = s->type.is_ptr;
             if (s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT) {
                 int n = s->init->nargs;
                 int base = local_add_ex(s->name, s->name_len, 1, n, 0);
@@ -612,13 +651,16 @@ static void gen_stmt(stmt_t *s) {
                 if (s->init) gen_expr(s->init);
                 else emit("    movq $0, %%rax\n");
                 int off = local_add(s->name, s->name_len);
-                if (is_rng) {
+                if (is_rng || is_pt) {
                     int li = find_local(s->name, s->name_len);
-                    g_locals[li].is_range       = 1;
-                    g_locals[li].range_lo       = s->type.range_lo;
-                    g_locals[li].range_hi       = s->type.range_hi;
-                    g_locals[li].range_lo_open  = s->type.range_lo_open;
-                    g_locals[li].range_hi_open  = s->type.range_hi_open;
+                    if (is_rng) {
+                        g_locals[li].is_range       = 1;
+                        g_locals[li].range_lo       = s->type.range_lo;
+                        g_locals[li].range_hi       = s->type.range_hi;
+                        g_locals[li].range_lo_open  = s->type.range_lo_open;
+                        g_locals[li].range_hi_open  = s->type.range_hi_open;
+                    }
+                    if (is_pt) g_locals[li].is_ptr = 1;
                 }
                 emit("    movq %%rax, %d(%%rbp)\n", off);
             }
