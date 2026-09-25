@@ -624,6 +624,21 @@ static void gen_binop(const char *op, int len) {
     if      (is_op_text(op, len, "+")) emit("    add %%rcx, %%rax\n");
     else if (is_op_text(op, len, "-")) emit("    sub %%rcx, %%rax\n");
     else if (is_op_text(op, len, "*")) emit("    imul %%rcx, %%rax\n");
+    else if (is_op_text(op, len, "**")) {
+        /* 整数幂：输入 base=%rax, exp=%rcx，输出 %rax */
+        int L_top = new_label();
+        int L_end = new_label();
+        emit("    mov %%rcx, %%r15\n");
+        emit("    mov $1, %%r14\n");
+        emit("    test %%r15, %%r15\n");
+        emit("    jle .L%d\n", L_end);
+        emit(".L%d:\n", L_top);
+        emit("    imul %%rax, %%r14\n");
+        emit("    dec %%r15\n");
+        emit("    jnz .L%d\n", L_top);
+        emit(".L%d:\n", L_end);
+        emit("    mov %%r14, %%rax\n");
+    }
     else if (is_op_text(op, len, "/")) emit("    cqto\n    idiv %%rcx\n");
     else if (is_op_text(op, len, "%")) emit("    cqto\n    idiv %%rcx\n    mov %%rdx, %%rax\n");
     else if (is_op_text(op, len, "==")) emit("    cmp %%rcx, %%rax\n    sete %%al\n    movzbq %%al, %%rax\n");
