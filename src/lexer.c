@@ -287,7 +287,7 @@ static void read_number(lexer_t *L, token_t *t) {
     else { t->kind = TOK_NUM_INT; t->ival = strtoll(t->start, NULL, 10); }
 }
 
-/* 字符串：第一个 " 到最后一个 " */
+/* 字符串：从 " 开始，到"后面紧跟 , ) 空白 换行"的 " 为止 */
 static int read_string(lexer_t *L, token_t *t) {
     int sl = L->line, sc = L->col;
     advance(L);
@@ -295,7 +295,14 @@ static int read_string(lexer_t *L, token_t *t) {
     while (1) {
         int c = peek(L);
         if (c == -1) { fprintf(stderr, "%d:%d: 未闭合字符串\n", sl, sc); return -1; }
-        if (c == '"') break;
+        if (c == '"') {
+            int nc = peek_at(L, 1);
+            if (nc == -1 || nc == ',' || nc == ')' ||
+                nc == ' ' || nc == '\t' || nc == '\n' || nc == '\r' ||
+                nc == '\\') {
+                break;
+            }
+        }
         advance(L);
     }
     t->len = (int)(L->src + L->pos - t->start);
@@ -348,19 +355,16 @@ int lex_next(lexer_t *L, token_t *t) {
     if (c == '"') return read_string(L, t);
     if (c == '\'') return read_char(L, t);
 
-    /* 反斜杠转义：\n \t \\ \" \' \0 */
+    /* 反斜杠转义：字符串外只允许 \n 和 \t */
     if (c == '\\') {
     static char esc_buf[2];
     int n = peek_at(L, 1);
     char v;
     if      (n == 'n')  v = '\n';
     else if (n == 't')  v = '\t';
-    else if (n == '\\') v = '\\';
-    else if (n == '"')  v = '"';
-    else if (n == '\'') v = '\'';
-    else if (n == '0')  v = '\0';
     else {
-        fprintf(stderr, "%d:%d: 未知转义 \\%c\n", L->line, L->col, n);
+        fprintf(stderr, "%d:%d: 未知转义 \\%c（字符串外只允许 \\n 和 \\t）\n",
+                L->line, L->col, n);
         return -1;
     }
     advance(L); advance(L);
