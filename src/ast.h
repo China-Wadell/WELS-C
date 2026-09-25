@@ -81,6 +81,8 @@ typedef struct {
     const char *inst_name[MAX_STRUCT_INSTANCES];
     int inst_name_len[MAX_STRUCT_INSTANCES];
     int64_t inst_init[MAX_STRUCT_INSTANCES][MAX_STRUCT_FIELDS];
+    const char *inst_str[MAX_STRUCT_INSTANCES][MAX_STRUCT_FIELDS];
+    int         inst_str_len[MAX_STRUCT_INSTANCES][MAX_STRUCT_FIELDS];
     int ninstances;
 } struct_def_t;
 

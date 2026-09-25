@@ -643,10 +643,16 @@ static int parse_struct(parser_t *P, struct_def_t *sd, int is_union) {
         int fi = 0;
         while (!is_punct(P, ')') && P->cur.kind != TOK_EOF) {
             if (P->cur.kind == TOK_NUM_INT) {
-                sd->inst_init[idx][fi++] = P->cur.ival;
+                sd->inst_init[idx][fi] = P->cur.ival;
+                sd->inst_str[idx][fi] = 0;
+                sd->inst_str_len[idx][fi] = 0;
+                fi++;
                 p_advance(P);
             } else if (P->cur.kind == TOK_STRING) {
-                sd->inst_init[idx][fi++] = 0;
+                sd->inst_init[idx][fi] = 0;
+                sd->inst_str[idx][fi] = P->cur.start;
+                sd->inst_str_len[idx][fi] = P->cur.len;
+                fi++;
                 p_advance(P);
             } else return p_err(P, "期望初值");
             p_peek(P);

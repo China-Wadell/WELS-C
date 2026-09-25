@@ -2,7 +2,6 @@
 
 static FILE *g_out = 0;
 static int   g_label = 0;
-static int   g_str_id = 0;
 static int   g_target_windows = 0;
 static int   g_cur_line = 0;
 
@@ -122,19 +121,56 @@ static int is_float_type(type_desc_t *t) {
     return 0;
 }
 
+/* ---------- 字符串表（去重） ---------- */
+#define MAX_STRS 1024
+typedef struct { const char *s; int len; } str_entry_t;
+static str_entry_t g_strs[MAX_STRS];
+static int g_nstrs = 0;
+
 static int str_add(const char *s, int len) {
-    int id = g_str_id++;
-    emit("    .section .rodata\n.Lstr%d:\n    .byte ", id);
-    for (int i = 0; i < len; i++) emit("%d, ", (unsigned char)s[i]);
-    emit("0\n    .text\n");
-    return id;
-}
-static int float_add(double v) {
-    int id = g_str_id++;
-    emit("    .section .rodata\n.Lfloat%d:\n    .double %.17g\n    .text\n", id, v);
+    for (int i = 0; i < g_nstrs; i++)
+        if (g_strs[i].len == len && memcmp(g_strs[i].s, s, len) == 0)
+            return i;
+    int id = g_nstrs++;
+    g_strs[id].s = s;
+    g_strs[id].len = len;
     return id;
 }
 
+static void emit_strings(void) {
+    if (g_nstrs == 0) return;
+    emit("    .section .rodata\n");
+    for (int i = 0; i < g_nstrs; i++) {
+        emit(".Lstr%d:\n    .byte ", i);
+        for (int k = 0; k < g_strs[i].len; k++)
+            emit("%d, ", (unsigned char)g_strs[i].s[k]);
+        emit("0\n");
+    }
+    emit("    .text\n");
+}
+
+/* ---------- 浮点表（去重） ---------- */
+#define MAX_FLOATS 256
+static double g_floats[MAX_FLOATS];
+static int    g_nfloats = 0;
+
+static int float_add(double v) {
+    for (int i = 0; i < g_nfloats; i++)
+        if (g_floats[i] == v) return i;
+    int id = g_nfloats++;
+    g_floats[id] = v;
+    return id;
+}
+
+static void emit_floats(void) {
+    if (g_nfloats == 0) return;
+    emit("    .section .rodata\n");
+    for (int i = 0; i < g_nfloats; i++)
+        emit(".Lfloat%d:\n    .double %.17g\n", i, g_floats[i]);
+    emit("    .text\n");
+}
+
+static int str_add(const char *s, int len);
 static void gen_expr(expr_t *e);
 static void gen_binop(const char *op, int len);
 static void gen_binop_float(const char *op, int len);
@@ -177,6 +213,19 @@ static int expr_is_string(expr_t *e) {
     if (e->kind == EX_IDENT) {
         int li = find_local(e->name, e->name_len);
         if (li >= 0 && g_locals[li].cont_type == 2) return 1;
+        return 0;
+    }
+    if (e->kind == EX_MEMBER) {
+        if (e->left->kind != EX_IDENT) return 0;
+        int gi = find_global(e->left->name, e->left->name_len);
+        if (gi < 0 || !g_globals[gi].is_struct_inst) return 0;
+        struct_def_t *sd = &g_prog->structs[g_globals[gi].struct_idx];
+        int fi = find_struct_field(sd, e->name, e->name_len);
+        if (fi < 0) return 0;
+        type_desc_t *ft = &sd->fields[fi].type;
+        if (ft->base_len == 9 && memcmp(ft->base, "字符串", 9) == 0) return 1;
+        if (ft->base_len == 6 && memcmp(ft->base, "string", 6) == 0) return 1;
+        return 0;
     }
     return 0;
 }
@@ -253,11 +302,21 @@ static void emit_globals(void) {
         emit("    .align 8\ng%d:\n", g->id);
         if (g->is_struct_inst) {
             struct_def_t *sd = &g_prog->structs[g->struct_idx];
+            int inst = g->inst_idx;
             if (sd->is_union) {
-                emit("    .quad %lld\n", (long long)sd->inst_init[g->inst_idx][0]);
+                if (sd->inst_str[inst][0])
+                    emit("    .quad .Lstr%d\n", str_add(sd->inst_str[inst][0],
+                                                          sd->inst_str_len[inst][0]));
+                else
+                    emit("    .quad %lld\n", (long long)sd->inst_init[inst][0]);
             } else {
-                for (int k = 0; k < sd->nfields; k++)
-                    emit("    .quad %lld\n", (long long)sd->inst_init[g->inst_idx][k]);
+                for (int k = 0; k < sd->nfields; k++) {
+                    if (sd->inst_str[inst][k])
+                        emit("    .quad .Lstr%d\n", str_add(sd->inst_str[inst][k],
+                                                              sd->inst_str_len[inst][k]));
+                    else
+                        emit("    .quad %lld\n", (long long)sd->inst_init[inst][k]);
+                }
             }
         } else {
             stmt_t *d = g->decl;
@@ -981,6 +1040,8 @@ int codegen_program(program_t *p, const char *out_path) {
     emit("    .text\n");
     emit_globals();
     for (int i = 0; i < p->nfuncs; i++) gen_func(p->funcs[i]);
+    emit_strings();
+    emit_floats();
     emit("    .section .note.GNU-stack,\"\",@progbits\n\n");
     fclose(g_out); g_out = 0;
     return 0;
