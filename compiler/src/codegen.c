@@ -80,6 +80,8 @@ typedef struct {
     int is_range;
     int64_t range_lo, range_hi;
     int range_lo_open, range_hi_open;
+    double range_lo_f, range_hi_f;
+    int range_is_float;
     int is_ptr;
     int size;
     int is_unsigned;
@@ -121,6 +123,7 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].is_container = 0;
     g_locals[g_nlocals].cont_type = 0;
     g_locals[g_nlocals].is_range = 0;
+    g_locals[g_nlocals].range_is_float = 0;
     g_locals[g_nlocals].is_ptr = 0;
     g_locals[g_nlocals].size = 8;
     g_locals[g_nlocals].is_unsigned = 0;
@@ -934,7 +937,27 @@ static void gen_expr(expr_t *e) {
 
                 gen_expr(e->right);
                 if (li >= 0) {
-                    if (g_locals[li].is_range) {
+                    if (g_locals[li].is_range && g_locals[li].range_is_float) {
+                        /* 浮点区间检查：comisd */
+                        int L_skip = new_label();
+                        if (g_locals[li].range_lo_f != -1.0/0.0 || !g_locals[li].range_lo_open) {
+                            int id = float_add(g_locals[li].range_lo_f, 8);
+                            emit("    movsd .Lfloat%d(%%rip), %%xmm1\n", id);
+                            emit("    comisd %%xmm1, %%xmm0\n");
+                            if (g_locals[li].range_lo_open) emit("    jbe .L%d\n", L_skip);
+                            else                            emit("    jb  .L%d\n", L_skip);
+                        }
+                        if (g_locals[li].range_hi_f != 1.0/0.0 || !g_locals[li].range_hi_open) {
+                            int id = float_add(g_locals[li].range_hi_f, 8);
+                            emit("    movsd .Lfloat%d(%%rip), %%xmm1\n", id);
+                            emit("    comisd %%xmm1, %%xmm0\n");
+                            if (g_locals[li].range_hi_open) emit("    jae .L%d\n", L_skip);
+                            else                            emit("    ja  .L%d\n", L_skip);
+                        }
+                        emit("    movsd %%xmm0, %d(%%rbp)\n", g_locals[li].offset);
+                        emit(".L%d:\n", L_skip);
+                    }
+                    else if (g_locals[li].is_range) {
                         int L_skip = new_label();
                         emit("    movq %%rax, %%rcx\n");
                         if (g_locals[li].range_lo != INT64_MIN || !g_locals[li].range_lo_open) {
@@ -1255,6 +1278,16 @@ static void gen_stmt(stmt_t *s) {
                     g_locals[li].size = type_size(&s->type);
                     g_locals[li].is_unsigned = type_is_unsigned(&s->type);
                     g_locals[li].float_size = fs;
+                    if (is_rng) {
+                        g_locals[li].is_range       = 1;
+                        g_locals[li].range_lo       = s->type.range_lo;
+                        g_locals[li].range_hi       = s->type.range_hi;
+                        g_locals[li].range_lo_open  = s->type.range_lo_open;
+                        g_locals[li].range_hi_open  = s->type.range_hi_open;
+                        g_locals[li].range_lo_f     = s->type.range_lo_f;
+                        g_locals[li].range_hi_f     = s->type.range_hi_f;
+                        g_locals[li].range_is_float = s->type.range_is_float;
+                    }
                 }
                 if (fs == 4) {
                     emit("    cvtsd2ss %%xmm0, %%xmm1\n");
@@ -1277,6 +1310,9 @@ static void gen_stmt(stmt_t *s) {
                         g_locals[li].range_hi       = s->type.range_hi;
                         g_locals[li].range_lo_open  = s->type.range_lo_open;
                         g_locals[li].range_hi_open  = s->type.range_hi_open;
+                        g_locals[li].range_lo_f     = s->type.range_lo_f;
+                        g_locals[li].range_hi_f     = s->type.range_hi_f;
+                        g_locals[li].range_is_float = s->type.range_is_float;
                     }
                     if (is_pt) g_locals[li].is_ptr = 1;
                     if (is_func_ptr_type(&s->type)) {

@@ -13,6 +13,8 @@ typedef struct {
     int is_unsigned;
     int64_t range_lo, range_hi;
     int range_lo_open, range_hi_open;
+    double range_lo_f, range_hi_f;
+    int range_is_float;
 } type_desc_t;
 
 typedef enum {

@@ -1023,7 +1023,7 @@ static int parse_cont_clear(parser_t *P, stmt_t **out) {
     return 0;
 }
 
-static int parse_range_bound(parser_t *P, int64_t *val, int *is_inf) {
+static int parse_range_bound(parser_t *P, int64_t *val, double *val_f, int *is_inf) {
     *is_inf = 0;
     int neg = 0;
     int has_sign = 0;
@@ -1033,6 +1033,14 @@ static int parse_range_bound(parser_t *P, int64_t *val, int *is_inf) {
 
     if (P->cur.kind == TOK_NUM_INT) {
         *val = neg ? -(int64_t)P->cur.ival : (int64_t)P->cur.ival;
+        *val_f = (double)*val;
+        p_advance(P);
+        return 0;
+    }
+    if (P->cur.kind == TOK_NUM_FLOAT) {
+        double v = neg ? -P->cur.fval : P->cur.fval;
+        *val_f = v;
+        *val = (int64_t)v;
         p_advance(P);
         return 0;
     }
@@ -1059,9 +1067,10 @@ static int parse_range_bounds(parser_t *P, type_desc_t *ty) {
 
     int lo_inf, hi_inf;
     int64_t lo, hi;
-    if (parse_range_bound(P, &lo, &lo_inf) < 0) return -1;
+    double lo_f, hi_f;
+    if (parse_range_bound(P, &lo, &lo_f, &lo_inf) < 0) return -1;
     if (expect_punct(P, ',', "期望 ','") < 0) return -1;
-    if (parse_range_bound(P, &hi, &hi_inf) < 0) return -1;
+    if (parse_range_bound(P, &hi, &hi_f, &hi_inf) < 0) return -1;
 
     if      (is_punct(P, ')')) { hi_open = 1; p_advance(P); }
     else if (is_punct(P, ']')) { hi_open = 0; p_advance(P); }
@@ -1075,6 +1084,15 @@ static int parse_range_bounds(parser_t *P, type_desc_t *ty) {
     ty->range_hi = hi;
     ty->range_lo_open = lo_open;
     ty->range_hi_open = hi_open;
+    ty->range_lo_f = lo_f;
+    ty->range_hi_f = hi_f;
+    /* 如果 base 是浮点类型，标记为浮点区间 */
+    const char *b = ty->base; int bl = ty->base_len;
+    if ((bl == 6 && (memcmp(b, "双精", 6) == 0 || memcmp(b, "浮点", 6) == 0)) ||
+        (bl == 6 && memcmp(b, "double", 6) == 0) ||
+        (bl == 5 && memcmp(b, "float", 5) == 0)) {
+        ty->range_is_float = 1;
+    }
     return 0;
 }
 
