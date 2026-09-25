@@ -615,6 +615,23 @@ static void gen_expr(expr_t *e) {
             }
             break;
         }
+        case EX_TERNARY: {
+            int L_else = new_label();
+            int L_end  = new_label();
+            gen_expr(e->left);
+            emit("    test %%rax, %%rax\n");
+            emit("    jz .L%d\n", L_else);
+            gen_expr(e->right);
+            emit("    jmp .L%d\n", L_end);
+            emit(".L%d:\n", L_else);
+            gen_expr(e->operand);
+            emit(".L%d:\n", L_end);
+            break;
+        }
+        case EX_COMMA:
+            gen_expr(e->left);
+            gen_expr(e->right);
+            break;
         case EX_CALL: gen_call(e); break;
         default: break;
     }

@@ -97,6 +97,17 @@ static void print_expr(expr_t *e, int d) {
             printf("CONVERT_TO(%.*s)\n", e->typed_type.base_len, e->typed_type.base);
             print_expr(e->left, d + 1);
             break;
+        case EX_TERNARY:
+            puts("TERNARY");
+            print_expr(e->left, d + 1);
+            print_expr(e->right, d + 1);
+            print_expr(e->operand, d + 1);
+            break;
+        case EX_COMMA:
+            puts("COMMA");
+            print_expr(e->left, d + 1);
+            print_expr(e->right, d + 1);
+            break;
     }
 }
 

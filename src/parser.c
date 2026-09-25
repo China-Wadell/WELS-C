@@ -11,6 +11,8 @@ static int parse_expr(parser_t *P, expr_t **out);
 static int parse_block(parser_t *P, stmt_t **out);
 static int parse_stmt(parser_t *P, stmt_t **out);
 static int parse_expr_stmt(parser_t *P, stmt_t **out);
+static int parse_assign(parser_t *P, expr_t **out);
+static int parse_ternary(parser_t *P, expr_t **out);
 static int parse_shift(parser_t *P, expr_t **out);
 static int parse_bitand(parser_t *P, expr_t **out);
 static int parse_bitxor(parser_t *P, expr_t **out);
@@ -167,7 +169,7 @@ static int parse_primary(parser_t *P, expr_t **out) {
         e->line = P->cur.line; e->col = P->cur.col;
         while (!is_punct(P, '}') && P->cur.kind != TOK_EOF) {
             expr_t *elem;
-            if (parse_expr(P, &elem) < 0) return -1;
+            if (parse_assign(P, &elem) < 0) return -1;
             e->args = realloc(e->args, sizeof(expr_t*) * (e->nargs + 1));
             e->args[e->nargs++] = elem;
             p_peek(P);
@@ -195,7 +197,7 @@ static int parse_postfix(parser_t *P, expr_t **out) {
             call->operand = *out;
             while (!is_punct(P, ')') && P->cur.kind != TOK_EOF) {
                 expr_t *arg;
-                if (parse_expr(P, &arg) < 0) return -1;
+                if (parse_assign(P, &arg) < 0) return -1;
                 call->args = realloc(call->args, sizeof(expr_t*) * (call->nargs + 1));
                 call->args[call->nargs++] = arg;
                 p_peek(P);
@@ -464,8 +466,23 @@ static int parse_logic_or(parser_t *P, expr_t **out) {
     return 0;
 }
 
-static int parse_assign(parser_t *P, expr_t **out) {
+static int parse_ternary(parser_t *P, expr_t **out) {
     if (parse_logic_or(P, out) < 0) return -1;
+    p_peek(P);
+    if (is_op(P, "?")) {
+        p_advance(P);
+        expr_t *e = new_expr(EX_TERNARY);
+        e->left = *out;
+        if (parse_assign(P, &e->right) < 0) return -1;
+        if (expect_op(P, ":", "期望 ':'") < 0) return -1;
+        if (parse_ternary(P, &e->operand) < 0) return -1;
+        *out = e;
+    }
+    return 0;
+}
+
+static int parse_assign(parser_t *P, expr_t **out) {
+    if (parse_ternary(P, out) < 0) return -1;
     p_peek(P);
     if (is_op(P, "=") || is_op(P, "+=") || is_op(P, "-=") ||
         is_op(P, "*=") || is_op(P, "/=") || is_op(P, "%=") ||
@@ -482,8 +499,22 @@ static int parse_assign(parser_t *P, expr_t **out) {
     return 0;
 }
 
+static int parse_comma(parser_t *P, expr_t **out) {
+    if (parse_assign(P, out) < 0) return -1;
+    p_peek(P);
+    while (is_punct(P, ',')) {
+        p_advance(P);
+        expr_t *e = new_expr(EX_COMMA);
+        e->left = *out;
+        if (parse_assign(P, &e->right) < 0) return -1;
+        *out = e;
+        p_peek(P);
+    }
+    return 0;
+}
+
 static int parse_expr(parser_t *P, expr_t **out) {
-    return parse_assign(P, out);
+    return parse_comma(P, out);
 }
 
 /* ============ 语句 ============ */
