@@ -91,6 +91,8 @@ typedef struct {
     int float_size;   /* 4 或 8，仅 is_float 时有效 */
     int is_ref;       /* 引用 */
     int is_func_ptr;  /* 函数指针 */
+    int elem_size;    /* 数组/指针的元素大小（步长） */
+    int elem_unsigned;
 } local_t;
 static local_t g_locals[MAX_LOCALS];
 static int     g_nlocals = 0;
@@ -133,6 +135,33 @@ static int local_add_ex(const char *name, int len, int is_array, int arr_len, in
     g_locals[g_nlocals].float_size = 0;
     g_locals[g_nlocals].is_ref = 0;
     g_locals[g_nlocals].is_func_ptr = 0;
+    g_locals[g_nlocals].elem_size = 8;
+    g_locals[g_nlocals].elem_unsigned = 0;
+    g_nlocals++;
+    return -g_stack_used;
+}
+
+static int local_add_arr(const char *name, int len, int count, int elem_size) {
+    int total = count * elem_size;
+    total = (total + 7) & ~7;
+    g_stack_used += total;
+    g_locals[g_nlocals].name = name;
+    g_locals[g_nlocals].len = len;
+    g_locals[g_nlocals].offset = -g_stack_used;
+    g_locals[g_nlocals].is_array = 1;
+    g_locals[g_nlocals].arr_len = count;
+    g_locals[g_nlocals].is_float = 0;
+    g_locals[g_nlocals].is_container = 0;
+    g_locals[g_nlocals].cont_type = 0;
+    g_locals[g_nlocals].is_range = 0;
+    g_locals[g_nlocals].is_ptr = 0;
+    g_locals[g_nlocals].size = 8;
+    g_locals[g_nlocals].is_unsigned = 0;
+    g_locals[g_nlocals].float_size = 0;
+    g_locals[g_nlocals].is_ref = 0;
+    g_locals[g_nlocals].is_func_ptr = 0;
+    g_locals[g_nlocals].elem_size = elem_size;
+    g_locals[g_nlocals].elem_unsigned = 0;
     g_nlocals++;
     return -g_stack_used;
 }
@@ -161,6 +190,31 @@ static int find_global(const char *name, int len) {
     for (int i = 0; i < g_nglobals; i++)
         if (g_globals[i].len == len && memcmp(g_globals[i].name, name, len) == 0) return i;
     return -1;
+}
+
+static int index_elem_size(expr_t *e) {
+    if (!e) return 8;
+    if (e->kind == EX_IDENT) {
+        int li = find_local(e->name, e->name_len);
+        if (li >= 0) return g_locals[li].elem_size;
+    }
+    return 8;
+}
+
+static int index_elem_unsigned(expr_t *e) {
+    if (!e) return 0;
+    if (e->kind == EX_IDENT) {
+        int li = find_local(e->name, e->name_len);
+        if (li >= 0) return g_locals[li].elem_unsigned;
+    }
+    return 0;
+}
+
+static const char *scale_from_elem(int es) {
+    if (es == 1) return "1";
+    if (es == 2) return "2";
+    if (es == 4) return "4";
+    return "8";
 }
 static int find_struct_field(struct_def_t *sd, const char *name, int len) {
     for (int i = 0; i < sd->nfields; i++)
@@ -219,6 +273,14 @@ static int is_func_ptr_type(type_desc_t *t) {
     if (l == 6 && memcmp(b, "函数", 6) == 0) return 1;
     if (l == 2 && memcmp(b, "fn", 2) == 0) return 1;
     return 0;
+}
+
+static int type_size(type_desc_t *t);
+
+static int base_type_size(type_desc_t *t) {
+    type_desc_t tmp = *t;
+    tmp.is_ptr = 0; tmp.is_array = 0; tmp.is_ref = 0;
+    return type_size(&tmp);
 }
 
 static int is_float_type(type_desc_t *t) {
@@ -439,11 +501,12 @@ static void gen_addr(expr_t *e) {
             exit(1);
         }
         case EX_INDEX: {
+            int es = index_elem_size(e->left);
             gen_expr(e->left);
             emit("    push %%rax\n");
             gen_expr(e->right);
             emit("    mov %%rax, %%rcx\n    pop %%rax\n");
-            emit("    lea (%%rax, %%rcx, 8), %%rax\n");
+            emit("    lea (%%rax, %%rcx, %s), %%rax\n", scale_from_elem(es));
             return;
         }
         case EX_MEMBER: {
@@ -1012,13 +1075,20 @@ static void gen_expr(expr_t *e) {
             }
             break;
         }
-        case EX_INDEX:
+        case EX_INDEX: {
+            int es = index_elem_size(e->left);
+            int eu = index_elem_unsigned(e->left);
             gen_expr(e->left);
             emit("    push %%rax\n");
             gen_expr(e->right);
             emit("    mov %%rax, %%rcx\n    pop %%rax\n");
-            emit("    mov (%%rax, %%rcx, 8), %%rax\n");
+            const char *sc = scale_from_elem(es);
+            if      (es == 1) emit("    %s (%%rax, %%rcx, %s), %%rax\n", eu ? "movzbq" : "movsbq", sc);
+            else if (es == 2) emit("    %s (%%rax, %%rcx, %s), %%rax\n", eu ? "movzwq" : "movswq", sc);
+            else if (es == 4) emit("    movslq (%%rax, %%rcx, %s), %%rax\n", sc);
+            else              emit("    mov (%%rax, %%rcx, %s), %%rax\n", sc);
             break;
+        }
         case EX_ASSIGN: {
             if (e->left->kind == EX_IDENT) {
                 int li = find_local(e->left->name, e->left->name_len);
@@ -1426,10 +1496,14 @@ static void gen_stmt(stmt_t *s) {
             int is_pt = s->type.is_ptr;
             if (s->type.is_array && s->init && s->init->kind == EX_ARRAY_INIT) {
                 int n = s->init->nargs;
-                int base = local_add_ex(s->name, s->name_len, 1, n, 0);
+                int es = base_type_size(&s->type);
+                int base = local_add_arr(s->name, s->name_len, n, es);
                 for (int i = 0; i < n; i++) {
                     gen_expr(s->init->args[i]);
-                    emit("    movq %%rax, %d(%%rbp)\n", base + i * 8);
+                    if      (es == 1) emit("    movb %%al, %d(%%rbp)\n", base + i * 1);
+                    else if (es == 2) emit("    movw %%ax, %d(%%rbp)\n", base + i * 2);
+                    else if (es == 4) emit("    movl %%eax, %d(%%rbp)\n", base + i * 4);
+                    else              emit("    movq %%rax, %d(%%rbp)\n", base + i * 8);
                 }
             } else if (is_f) {
                 if (s->init) gen_expr(s->init);
@@ -1478,6 +1552,10 @@ static void gen_stmt(stmt_t *s) {
                         g_locals[li].range_is_float = s->type.range_is_float;
                     }
                     if (is_pt) g_locals[li].is_ptr = 1;
+                    if (is_pt || s->type.is_array) {
+                        g_locals[li].elem_size = base_type_size(&s->type);
+                        g_locals[li].elem_unsigned = type_is_unsigned(&s->type);
+                    }
                     if (is_func_ptr_type(&s->type)) {
                         g_locals[li].is_func_ptr = 1;
                         g_locals[li].is_ptr = 1;
