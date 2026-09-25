@@ -1,0 +1,17 @@
+_注释_ mem.weh — WELS-C 内存库
+
+外来 函 wels_malloc (n: 长整) -> 空 指针;
+外来 函 wels_free (p: 空 指针) -> 空;
+外来 函 wels_heap_remaining () -> 长整;
+
+函 分配 (n: 长整) -> 空 指针 {
+    返 wels_malloc(n);
+}
+
+函 释放 (p: 空 指针) -> 空 {
+    wels_free(p);
+}
+
+函 剩余内存 () -> 长整 {
+    返 wels_heap_remaining();
+}

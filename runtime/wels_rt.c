@@ -88,6 +88,30 @@ char *wels_strcat(char *dst, const char *src) {
     return dst;
 }
 
+/* ---------- 内存分配（bump allocator） ---------- */
+
+#define WELS_HEAP_SIZE (1024 * 1024)
+static char wels_heap[WELS_HEAP_SIZE];
+static unsigned long wels_heap_used = 0;
+
+void *wels_malloc(unsigned long n) {
+    /* 8 字节对齐 */
+    n = (n + 7) & ~7UL;
+    if (wels_heap_used + n > WELS_HEAP_SIZE) return 0;
+    void *p = &wels_heap[wels_heap_used];
+    wels_heap_used += n;
+    return p;
+}
+
+void wels_free(void *p) {
+    (void)p;
+    /* bump allocator：不释放 */
+}
+
+unsigned long wels_heap_remaining(void) {
+    return WELS_HEAP_SIZE - wels_heap_used;
+}
+
 void wels_exit(int code) {
     sys_exit(code);
 }
